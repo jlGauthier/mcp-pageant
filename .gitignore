@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Local configuration
+CLAUDE.local.md
+.env
+.env.local
+*.local
+.claude/
+
+# Plans and compiled personas
+plans/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# IDE
+.vscode/
+.idea/
+
+# Test coverage
+coverage/
+
+# Build outputs
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+# Agent directories (auto-added by mcp_pageant)
+.pageant/

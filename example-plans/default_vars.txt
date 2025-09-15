@@ -1,0 +1,5 @@
+# Default Persona Variables
+# These are used globally unless overridden by project-specific vars.txt
+# Format: KEY=value
+
+AGENT_NAME=Bob
