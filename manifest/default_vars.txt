@@ -1,0 +1,17 @@
+# Default Variables for MCP Pageant
+# These cascade with variables from other manifest directories
+# Later manifest directories override earlier ones
+# Project-specific vars override everything
+
+# System
+PROJECT_NAME=MCP Pageant
+VERSION=1.0.0
+ENV=development
+
+# Behavior
+DEBUG_MODE=false
+LOG_LEVEL=info
+
+# Persona
+AGENT_NAME=Bob
+DEFAULT_TONE=professional

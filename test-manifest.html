@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Manifest Debug Test</title>
+  <style>
+    body {
+      background: #1a1a1a;
+      color: #e0e0e0;
+      font-family: monospace;
+      padding: 20px;
+    }
+    .section {
+      border: 1px solid #555;
+      margin: 10px 0;
+      padding: 10px;
+      background: #2a2a2a;
+    }
+    .error { color: #ff6666; }
+    .success { color: #66ff66; }
+    pre {
+      background: #0a0a0a;
+      padding: 10px;
+      overflow: auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>Manifest API Test</h1>
+  <button onclick="testManifest()">Test Manifest API</button>
+  <button onclick="testProjects()">Test Projects API</button>
+  <button onclick="testTemplate()">Test Template API</button>
+
+  <div id="results"></div>
+
+  <script>
+    function log(msg, type = 'info') {
+      const div = document.createElement('div');
+      div.className = type;
+      div.innerHTML = `[${new Date().toISOString()}] ${msg}`;
+      document.getElementById('results').appendChild(div);
+    }
+
+    async function testManifest() {
+      log('Testing /api/manifest...');
+      try {
+        const response = await fetch('http://localhost:52100/api/manifest');
+        const text = await response.text();
+        log(`Response status: ${response.status}`);
+        log(`Response headers: ${JSON.stringify([...response.headers.entries()])}`);
+
+        try {
+          const data = JSON.parse(text);
+          log(`Success: ${data.success}`, data.success ? 'success' : 'error');
+
+          if (data.data) {
+            const sections = Object.keys(data.data);
+            log(`Found ${sections.length} sections: ${sections.join(', ')}`);
+
+            // Show structure of each section
+            sections.forEach(section => {
+              const sectionData = data.data[section];
+              log(`<div class="section">
+                <b>${section}</b> (${sectionData.type})<br>
+                Dir: ${sectionData.dir}<br>
+                Files: ${sectionData.tree?.files?.length || 0}<br>
+                Children: ${Object.keys(sectionData.tree?.children || {}).length}
+              </div>`, 'info');
+            });
+          }
+
+          // Display full JSON
+          log(`<pre>${JSON.stringify(data, null, 2)}</pre>`, 'info');
+        } catch (e) {
+          log(`Failed to parse JSON: ${e.message}`, 'error');
+          log(`Raw response: <pre>${text}</pre>`, 'error');
+        }
+      } catch (error) {
+        log(`Fetch failed: ${error.message}`, 'error');
+      }
+    }
+
+    async function testProjects() {
+      log('Testing /api/projects...');
+      try {
+        const response = await fetch('http://localhost:52100/api/projects');
+        const data = await response.json();
+        log(`Found ${data.data?.length || 0} projects`);
+        log(`<pre>${JSON.stringify(data, null, 2)}</pre>`, 'info');
+      } catch (error) {
+        log(`Projects test failed: ${error.message}`, 'error');
+      }
+    }
+
+    async function testTemplate() {
+      log('Testing /api/template...');
+      try {
+        const response = await fetch('http://localhost:52100/api/template');
+        const data = await response.json();
+        log(`Template has ${data.data?.items?.length || 0} items`);
+        log(`<pre>${JSON.stringify(data, null, 2)}</pre>`, 'info');
+      } catch (error) {
+        log(`Template test failed: ${error.message}`, 'error');
+      }
+    }
+
+    // Auto-test on load
+    window.onload = () => {
+      log('Page loaded. Click buttons to test APIs.');
+      testManifest();
+    };
+  </script>
+</body>
+</html>

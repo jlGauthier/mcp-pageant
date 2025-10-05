@@ -3,14 +3,83 @@ import path from 'path';
 
 export class PersonaCore {
   /**
+   * Custom sort function for manifest references
+   * Sorts by: section number, subsection number, then filename
+   */
+  sortReferences(refs) {
+    return refs.sort((a, b) => {
+      // Extract parts from both paths
+      const parseRef = (ref) => {
+        // Handle both old format (@./manifest/) and new format (@./../mcp_persona/manifest/)
+        const parts = ref.split('/');
+        const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
+
+        if (manifestIndex < 0) return { section: 999, subsection: 999, file: ref };
+
+        const sectionPart = parts[manifestIndex + 1] || '';
+        const subsectionPart = parts[manifestIndex + 2] || '';
+        const filePart = parts[parts.length - 1] || '';
+
+        // Extract numbers from section (e.g., "001_main" -> 1)
+        const sectionMatch = sectionPart.match(/^(\d+)/);
+        const sectionNum = sectionMatch ? parseInt(sectionMatch[1]) : 999;
+
+        // Extract numbers from subsection (e.g., "01_dialect" -> 1)
+        const subsectionMatch = subsectionPart.match(/^(\d+)/);
+        const subsectionNum = subsectionMatch ? parseInt(subsectionMatch[1]) : 999;
+
+        return {
+          section: sectionNum,
+          subsection: subsectionNum,
+          file: filePart,
+          sectionName: sectionPart,
+          subsectionName: subsectionPart
+        };
+      };
+
+      const aParsed = parseRef(a);
+      const bParsed = parseRef(b);
+
+      // Sort by section number first
+      if (aParsed.section !== bParsed.section) {
+        return aParsed.section - bParsed.section;
+      }
+
+      // Then by subsection number
+      if (aParsed.subsection !== bParsed.subsection) {
+        return aParsed.subsection - bParsed.subsection;
+      }
+
+      // Then by section name (for same numbers)
+      if (aParsed.sectionName !== bParsed.sectionName) {
+        return aParsed.sectionName.localeCompare(bParsed.sectionName);
+      }
+
+      // Then by subsection name
+      if (aParsed.subsectionName !== bParsed.subsectionName) {
+        return aParsed.subsectionName.localeCompare(bParsed.subsectionName);
+      }
+
+      // Finally by filename
+      return aParsed.file.localeCompare(bParsed.file);
+    });
+  }
+
+  /**
    * Get the slot key for a reference path
    * Returns null for LIST entries, slot key for SLOT entries
    */
   getSlotKey(refPath) {
-    const match = refPath.match(/@\.\/manifest\/([^\/]+)(?:\/([^\/]+))?/);
-    if (!match) return null;
-    
-    const [, sectionDir, subsectionOrFile] = match;
+    // Handle both old and new path formats
+    const parts = refPath.split('/');
+    const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
+
+    if (manifestIndex < 0) return null;
+
+    const sectionDir = parts[manifestIndex + 1];
+    const subsectionOrFile = parts[manifestIndex + 2];
+
+    if (!sectionDir) return null;
     
     // Check if section is a LIST (ends with _list) 
     if (sectionDir.endsWith('_list')) {
@@ -67,7 +136,7 @@ export class PersonaCore {
     
     // Separate existing references from other content
     for (const line of lines) {
-      if (line.trim().startsWith('@./manifest/')) {
+      if (line.trim().startsWith('@')) {
         fileRefs.push(line.trim());
       } else {
         nonRefs.push(line);
@@ -85,8 +154,8 @@ export class PersonaCore {
       }
     }
     
-    // Sort references
-    fileRefs.sort();
+    // Sort references using custom sort
+    this.sortReferences(fileRefs);
     
     // Filter duplicates based on slot keys
     const slotWinners = new Map();
@@ -111,7 +180,7 @@ export class PersonaCore {
     
     // Combine and sort
     const filteredRefs = [...listRefs, ...slotWinners.values()];
-    filteredRefs.sort();
+    this.sortReferences(filteredRefs);
     
     // Rebuild template
     const newLines = [];
@@ -145,34 +214,36 @@ export class PersonaCore {
    */
   async removeFileFromTemplate(templateContent, fileToRemove, filePath) {
     const lines = templateContent.split('\n');
-    
+
     // Get dependencies of the file being removed
     const dependencies = await this.extractDependencies(filePath);
-    
+
     // Determine which dependencies to remove (only LIST entries)
     const toRemove = [fileToRemove];
-    
+
     for (const dep of dependencies) {
       const depParts = dep.split('/');
-      const depSectionDir = depParts[2];
-      const depSubsectionDir = depParts[3];
-      
+      const manifestIndex = depParts.findIndex(p => p === 'manifest' || p.includes('manifest'));
+
+      const depSectionDir = manifestIndex >= 0 ? depParts[manifestIndex + 1] : depParts[2];
+      const depSubsectionDir = manifestIndex >= 0 ? depParts[manifestIndex + 2] : depParts[3];
+
       let shouldRemove = false;
-      
+
       if (depSectionDir && depSectionDir.endsWith('_list')) {
         // LIST section - should be removed
         shouldRemove = true;
       } else if (depSubsectionDir && /^\d+[_-]/.test(depSubsectionDir)) {
         // Numbered subsection (SLOT) - should NOT be removed
         shouldRemove = false;
-      } else if (depSectionDir && /^\d+[_-]/.test(depSectionDir)) {
+      } else if (depSectionDir && /^\d+[_-]/.test(depSectionDir) && !depSectionDir.endsWith('_list')) {
         // Numbered section (SLOT) - should NOT be removed
         shouldRemove = false;
       } else {
         // Non-numbered, non-list - organizational, remove it
         shouldRemove = true;
       }
-      
+
       if (shouldRemove) {
         toRemove.push(dep);
       }
@@ -180,11 +251,22 @@ export class PersonaCore {
     
     // Build new template without removed items
     const newLines = [];
-    
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed.startsWith('@./manifest/')) {
-        if (!toRemove.includes(trimmed)) {
+      if (trimmed.startsWith('@')) {
+        // Check if this line should be removed
+        let shouldKeep = true;
+        for (const removeItem of toRemove) {
+          // Handle both exact matches and dependency path matches
+          // Dependencies have @ prefix, need to match against template lines
+          const depWithoutAt = removeItem.startsWith('@') ? removeItem.substring(1) : removeItem;
+          if (trimmed === removeItem || trimmed.endsWith(depWithoutAt.replace('./', '/'))) {
+            shouldKeep = false;
+            break;
+          }
+        }
+        if (shouldKeep) {
           newLines.push(line);
         }
       } else {

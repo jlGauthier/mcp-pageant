@@ -3,6 +3,20 @@
 ## Overview
 The MCP Pageant system uses a dependency-based approach where manifest files can declare dependencies on other files. The behavior of these dependencies varies based on whether they target LIST directories or SLOT directories.
 
+## CRITICAL: Multiple Manifest Directories
+**WARNING**: The dependency system currently FAILS when multiple manifest directories are configured. When using MANIFEST_DIRS with multiple paths (e.g., `./manifest,../mcp_persona/manifest`), the system treats them as a single merged structure but does NOT properly enforce SLOT exclusivity across directories.
+
+**Current Broken Behavior**:
+- Files from different manifest directories can occupy the same SLOT simultaneously
+- Example: `./manifest/001_main/professional.md` and `../mcp_persona/manifest/001_main/casual.md` BOTH get compiled even though 001_main is a SLOT that should only hold ONE file
+- This results in conflicting personas being merged together
+
+**Intended Behavior**:
+- Multiple manifest directories should merge into a single logical structure
+- SLOT rules should apply across ALL manifest directories
+- Later directories in MANIFEST_DIRS should override earlier ones for SLOTS
+- Only one file should ever occupy a SLOT, regardless of which manifest directory it comes from
+
 ## Directory Types
 
 ### LIST Directories
@@ -125,3 +139,25 @@ Actual content of the file...
 - Sub-slot paths must be matched exactly (01_database ≠ 02_database)
 - Empty slots are valid (no file required in every slot)
 - Circular dependencies must be detected and prevented
+
+## Required Fixes for Multiple Manifests
+
+1. **Template Compilation**: Must respect SLOT exclusivity across all manifest directories
+2. **Priority System**: Later manifest directories should override earlier ones for SLOTS
+3. **Merged View**: All dependency resolution should operate on a merged view of all manifests
+4. **SLOT Enforcement**: Only ONE file per SLOT, regardless of source manifest directory
+5. **LIST Accumulation**: LIST directories should still accumulate entries from all manifests
+
+## Example of Correct Behavior
+
+Given MANIFEST_DIRS=`./manifest,../mcp_persona/manifest`:
+
+If both directories contain `001_main/`:
+- `./manifest/001_main/professional.md` exists (source manifest)
+- `../mcp_persona/manifest/001_main/agent.md` exists (extension manifest)
+- **Result**: Only `agent.md` should be active (extension overrides source)
+
+If both directories contain `020_pattern_list/`:
+- `./manifest/020_pattern_list/clean_code.md` exists
+- `../mcp_persona/manifest/020_pattern_list/security.md` exists
+- **Result**: BOTH files should be active (LIST accumulates)

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "update_look",
+    "description": "Swap out segments of your appearance for image generation. Changes your Look section which selfie MCP uses to generate images.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "subsection": {
+          "type": "string",
+          "enum": ["1_body", "3_hair", "4_attire", "5_style", "6_place"],
+          "description": "Which appearance aspect to update: 1_body (physical features), 3_hair (hairstyle/color), 4_attire (outfit/clothing), 5_style (accessories/makeup), 6_place (location/background)"
+        },
+        "partial": {
+          "type": "string",
+          "description": "Partial filename to match from 070_look subsection"
+        }
+      },
+      "required": ["subsection", "partial"]
+    },
+    "handler": {
+      "type": "add",
+      "section": "070_look",
+      "useSubsectionParam": true
+    }
+  },
+  {
+    "name": "inspect",
+    "description": "Show your current template composition - what persona components are active right now. Reveals which files built you, distinguishing between SLOT sections (only one active) and LIST sections (multiple accumulate).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "required": []
+    },
+    "handler": {
+      "type": "inspect_template"
+    }
+  }
+]

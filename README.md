@@ -1,4 +1,4 @@
-# MCP Pageant
+ # MCP Pageant
 
 A Model Context Protocol (MCP) server for dynamic persona management in AI assistants. Build and hot-swap modular personas composed of behavioral patterns, technical knowledge, and communication styles.
 
@@ -47,6 +47,19 @@ cd mcp_pageant
 npm install
 ```
 
+### Optional: Environment Configuration
+
+Create a `.env` file to customize paths (defaults shown):
+
+```bash
+# Location of compiled personas (default: ./plans)
+PLANS_DIR=./plans
+
+# Comma-separated manifest directories (default: ./manifest)
+# Useful for sharing components across projects
+MANIFEST_DIRS=./manifest,../shared_personas/manifest
+```
+
 ### Step 2: Configure Claude Desktop
 
 1. Locate your Claude Desktop config file:
@@ -84,7 +97,7 @@ This should show available persona components if properly connected.
 npm start
 
 # Launch the web editor (optional)
-node launch-editor.js
+bun launch-editor.js
 # Opens at http://localhost:52100
 ```
 
@@ -118,14 +131,23 @@ These tools are available in Claude Desktop after MCP Pageant is configured:
 Adds a persona component to your current configuration. Components stack based on their type (SLOT vs LIST).
 
 **Parameters:**
-- `section` (required): Target section like 'main', 'tech', 'jobs', 'output'
-- `subsection` (optional): Subsection like 'tone', 'dialect', 'narration'
+- `section` (required): Target section like 'main', 'tech', 'jobs', 'output' (supports fuzzy matching)
+- `subsection` (optional): Subsection like 'tone', 'dialect', 'narration' (supports fuzzy matching)
 - `partial` (required): Filename pattern or 'random' for random selection
+
+**Fuzzy Matching:**
+- Section and subsection names don't need to be exact
+- Numeric prefixes are optional (both '001_main' and 'main' work)
+- Underscores and hyphens are ignored in matching
 
 **Examples:**
 ```javascript
 // Add a main persona (replaces current)
 add section:main partial:agent
+
+// Fuzzy matching works too
+add section:tech partial:postgres  // Finds 'postgresql'
+add section:out subsection:ton partial:indep  // Finds 'output/tone/independent'
 
 // Add technical knowledge (accumulates)
 add section:tech partial:postgresql
@@ -224,6 +246,32 @@ build_agent name:frontend_agent mcps:["pageant", "filesystem"]
 build_agent name:db_agent mcps:["pageant", "postgresql"]
 ```
 
+### `create` - Write New Persona Components
+Create new persona components directly without manually editing files.
+
+**Parameters:**
+- `section` (required): Target section for the new component
+- `subsection` (optional): Subsection for organization (required for output and look sections)
+- `filename` (required): Name of the file to create (include .md extension)
+- `secondperson_prompt_from_system_to_assistant` (required): Content in second person ("You are...", "You must...")
+
+**Content Guidelines:**
+- 200 chars: Quick behavioral reminders
+- 700 chars: Complex instructions or patterns
+- 1k-6k chars: Primary roles (main personality, specialized engineers)
+
+**Examples:**
+```javascript
+// Create a new main persona
+create section:main filename:hacker.md secondperson_prompt_from_system_to_assistant:"You are an elite hacker. You think in exploits and vulnerabilities..."
+
+// Add a new technical component
+create section:tech filename:rust.md secondperson_prompt_from_system_to_assistant:"You write idiomatic Rust code. You prefer zero-cost abstractions..."
+
+// Create a tone modifier
+create section:output subsection:tone filename:flirty.md secondperson_prompt_from_system_to_assistant:"You communicate with playful innuendo and subtle flirtation..."
+```
+
 ## Multi-Agent Architecture
 
 In modern development, different parts of your system need different expertise:
@@ -279,16 +327,18 @@ add section:jobs partial:QA_eng
 Launch the visual editor for easier persona management:
 
 ```bash
-node launch-editor.js
+bun launch-editor.js
 ```
 
 Access at `http://localhost:52100`
 
 Features:
-- Visual component browser
-- Real-time persona preview
-- Drag-and-drop composition
-- Variable configuration
+- **Visual component browser** - Tree view of all available components
+- **Real-time persona preview** - See compiled persona as you build
+- **Project switching** - Switch between different project personas
+- **Fuzzy search** - Find components without exact names
+- **Auto-refresh** - Changes update immediately
+- **Variable configuration** - Set and preview variables
 
 ## Creating Custom Components
 
@@ -342,6 +392,69 @@ DEBUG=mcp:* npm start
 3. **Compilation**: Template compiles to final persona with variable substitution
 4. **Loading**: Compiled persona loads into the AI assistant's context
 5. **Hot-swapping**: Changes compile and reload without restarting
+
+## Advanced Configuration
+
+### Multi-Manifest Support
+
+Configure multiple manifest directories as overlays:
+
+```bash
+# .env file
+MANIFEST_DIRS=./manifest,../company_personas/manifest,~/shared/ai_personas
+```
+
+Manifests work as cascading overlays:
+- First directory: Base/source components
+- Additional directories: Extensions and overrides
+- Later directories have precedence for new file creation
+- All directories contribute to available components
+
+### Tool Hints
+
+Add `tool_hints.txt` to any manifest directory to provide guidance when using tools:
+
+```text
+# manifest/tool_hints.txt
+
+Professional persona configuration:
+- 'tech' sections define technical guidelines
+- 'pattern' sections establish behavioral standards
+- 'output' sections configure communication style
+```
+
+### Project Organization
+
+Each project gets its own persona configuration:
+- Personas stored in `plans/<project-path>/persona.md`
+- Templates stored in `plans/<project-path>/template.md`
+- Variables stored in `plans/<project-path>/vars.txt`
+- CLAUDE.local.md automatically references the persona
+
+### Variable Cascading
+
+Variables cascade from multiple sources in order of precedence:
+
+1. **Manifest Variables** - Each manifest directory can have `default_vars.txt`
+   - Loaded in order specified in MANIFEST_DIRS
+   - Later directories override earlier ones
+2. **Global Defaults** - `plans/default_vars.txt`
+   - Overrides all manifest variables
+3. **Project Variables** - `plans/<project>/vars.txt`
+   - Highest precedence, overrides everything
+
+Example cascade:
+```bash
+# manifest1/default_vars.txt
+DEBUG_MODE=false
+LOG_LEVEL=info
+
+# manifest2/default_vars.txt
+LOG_LEVEL=debug  # Overrides manifest1
+
+# plans/<project>/vars.txt
+LOG_LEVEL=error  # Final value
+```
 
 ## Contributing
 

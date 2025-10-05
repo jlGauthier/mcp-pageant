@@ -1,28 +1,66 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { PersonaCore } from './persona-core.js';
+import { MultiManifest } from './MultiManifest.js';
+import { FuzzyMatch } from './FuzzyMatch.js';
+import { formatMarkdown } from './formatMarkdown.js';
 export class PersonaManager extends PersonaCore {
+  // Delegate to FuzzyMatch for consistency
+  fuzzyMatch(options, search) {
+    const result = FuzzyMatch.findBest(options, search);
+    return result || ''; // Return empty string instead of null for backward compatibility
+  }
+
   constructor(baseDir) {
     super();
     this.baseDir = baseDir; // .
+
+    // Load configuration from environment
+    this.plansDir = process.env.PLANS_DIR ?
+      path.resolve(baseDir, process.env.PLANS_DIR) :
+      path.join(baseDir, 'plans');
+
+    // Parse manifest directories from env
+    const manifestDirs = process.env.MANIFEST_DIRS ?
+      process.env.MANIFEST_DIRS.split(',').map(dir =>
+        path.resolve(baseDir, dir.trim())
+      ) :
+      [path.join(baseDir, 'manifest')];
+
+    // Initialize MultiManifest with all directories
+    this.multiManifest = new MultiManifest(manifestDirs);
+    this.manifestDirs = manifestDirs; // Keep for backward compatibility
+
     this.variables = {};
     this.variablesLoaded = this.loadVariables();
   }
   async loadVariables() {
     this.variables = {};
-    
-    // First load global defaults
+
+    // First load default_vars.txt from ALL manifest directories (cascade)
+    for (const manifestDir of this.manifestDirs) {
+      try {
+        const manifestVarsPath = path.join(manifestDir, 'default_vars.txt');
+        const manifestContent = await fs.readFile(manifestVarsPath, 'utf8');
+        this.parseVariables(manifestContent);
+        console.log(`Loaded variables from ${manifestVarsPath}`);
+      } catch (error) {
+        // No default_vars.txt in this manifest dir is fine
+      }
+    }
+
+    // Then load global defaults from plans dir
     try {
-      const defaultVarsPath = path.join(this.baseDir, 'plans', 'default_vars.txt');
+      const defaultVarsPath = path.join(this.plansDir, 'default_vars.txt');
       const defaultContent = await fs.readFile(defaultVarsPath, 'utf8');
       this.parseVariables(defaultContent);
     } catch (error) {
-      console.error('Warning: default_vars.txt not found');
+      // Plans default_vars.txt is optional
     }
-    
-    // Then override with project-specific vars if they exist
+
+    // Finally override with project-specific vars if they exist
     try {
-      const projectVarsPath = path.join(this.baseDir, 'plans', this.getProjectDirName(), 'vars.txt');
+      const projectVarsPath = path.join(this.plansDir, this.getProjectDirName(), 'vars.txt');
       const projectContent = await fs.readFile(projectVarsPath, 'utf8');
       this.parseVariables(projectContent);
     } catch (error) {
@@ -58,88 +96,34 @@ export class PersonaManager extends PersonaCore {
     return pathParts.join('--');
   }
   getTemplatePath() {
-    return path.join(this.baseDir, 'plans', this.getProjectDirName(), 'template.md');
+    return path.join(this.plansDir, this.getProjectDirName(), 'template.md');
   }
   getPersonaPath() {
-    return path.join(this.baseDir, 'plans', this.getProjectDirName(), 'persona.md');
+    return path.join(this.plansDir, this.getProjectDirName(), 'persona.md');
   }
-  async findManifestDir(manifestPath, name) {
-    const dirs = await fs.readdir(manifestPath);
-    
-    for (const dir of dirs) {
-      const isList = dir.endsWith('_list');
-      
-      let dirName = '';
-      let dirNumber = 0;
-      
-      const numMatch = dir.match(/^(\d+)[_-](.+)$/);
-      if (numMatch) {
-        dirNumber = parseInt(numMatch[1]);
-        dirName = numMatch[2].toLowerCase();
-      } else {
-        dirName = dir.toLowerCase();
-      }
-      
-      if (isList) {
-        dirName = dirName.replace(/_list$/, '');
-      }
-      
-      if (dirName === name.toLowerCase()) {
-        return { dir, number: dirNumber, isList };
-      }
+
+  // Helper methods using MultiManifest
+  async findFileWithMultiManifest(section, subsection, partial) {
+    // If partial includes .md, remove it
+    if (partial && partial.endsWith('.md')) {
+      partial = partial.replace('.md', '');
     }
-    
+
+    const fileInfo = await this.multiManifest.findFile(section, subsection, partial);
+    if (fileInfo) {
+      return fileInfo.path;
+    }
     return null;
   }
-  async findSubsectionDir(sectionPath, subsection) {
-    try {
-      const items = await fs.readdir(sectionPath, { withFileTypes: true });
-      
-      for (const item of items) {
-        if (!item.isDirectory()) continue;
-        
-        const parts = item.name.split('_');
-        let subNumber = 0;
-        let subName = item.name;
-        
-        if (parts.length > 1 && /^\d+$/.test(parts[0])) {
-          subNumber = parseInt(parts[0]);
-          subName = parts.slice(1).join('_');
-        }
-        
-        if (subName.toLowerCase() === subsection.toLowerCase()) {
-          return { dir: item.name, number: subNumber };
-        }
-      }
-    } catch (error) {
-      // Directory doesn't exist or can't be read
-    }
-    
-    return null;
+
+  async findFilesWithMultiManifest(section, subsection, partial) {
+    const files = await this.multiManifest.findFiles(section, subsection, partial);
+    return files.map(f => f.path);
   }
-  async findMatchingFiles(dirPath, partial) {
-    const matches = [];
-    
-    try {
-      const items = await fs.readdir(dirPath, { withFileTypes: true });
-      
-      for (const item of items) {
-        const fullPath = path.join(dirPath, item.name);
-        
-        if (item.isDirectory()) {
-          const subMatches = await this.findMatchingFiles(fullPath, partial);
-          matches.push(...subMatches);
-        } else if (item.name.endsWith('.md')) {
-          if (item.name.toLowerCase().includes(partial.toLowerCase())) {
-            matches.push(fullPath);
-          }
-        }
-      }
-    } catch (error) {
-      // Directory doesn't exist or can't be read
-    }
-    
-    return matches;
+
+  async readFileWithMultiManifest(section, subsection, partial) {
+    const result = await this.multiManifest.readFile(section, subsection, partial);
+    return result ? result.content : null;
   }
   parseReference(line) {
     const match = line.match(/@\.\/manifest\/([^\/]+)(?:\/([^\/]+))?(?:\/(.+))?/);
@@ -166,82 +150,379 @@ export class PersonaManager extends PersonaCore {
       filePath
     };
   }
+  isListDirectory(dirName) {
+    // LIST directories end with _list
+    return dirName.endsWith('_list');
+  }
+
+  isSlotDirectory(dirName) {
+    // SLOT directories start with numbers and don't end with _list
+    return /^\d{3}_/.test(dirName) && !dirName.endsWith('_list');
+  }
+
+  async cleanAndSortTemplate(templatePath) {
+    // Read template
+    let template = '';
+    try {
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch {
+      return; // No template to clean
+    }
+
+    const lines = template.split('\n');
+    const references = [];
+    const nonRefs = [];
+
+    // Extract all @ references and fix malformed paths
+    for (const line of lines) {
+      if (line.trim().startsWith('@')) {
+        let fullPath = line.trim().substring(1);
+
+        // Fix malformed paths with duplicate /manifest/ patterns
+        // e.g., "./../mcp_persona/manifest/050_story/turned_hot/manifest/060_play_list/..."
+        // should be "./../mcp_persona/manifest/060_play_list/..."
+        if (fullPath.includes('/manifest/') && fullPath.split('/manifest/').length > 2) {
+          // Find all occurrences of /manifest/
+          const parts = fullPath.split('/manifest/');
+          // Keep only the first occurrence and the last part
+          fullPath = parts[0] + '/manifest/' + parts[parts.length - 1];
+          console.warn(`Fixed malformed path: ${line.trim()} -> @${fullPath}`);
+        }
+
+        // Extract the manifest-relative part (everything after /manifest/)
+        const manifestIdx = fullPath.lastIndexOf('/manifest/');
+        const manifestRelative = manifestIdx >= 0
+          ? fullPath.substring(manifestIdx + 10) // Skip "/manifest/"
+          : fullPath;
+
+        references.push({
+          manifestRelative,
+          fullPath,
+          line: `@${fullPath}` // Use the cleaned path
+        });
+      } else {
+        nonRefs.push(line);
+      }
+    }
+
+    // Sort by manifest relative path
+    references.sort((a, b) => a.manifestRelative.localeCompare(b.manifestRelative));
+
+    // Process sorted refs, dropping slot collisions
+    const finalRefs = [];
+    const occupiedSlots = new Set();
+
+    for (const ref of references) {
+      // Find the last numbered directory to determine slot
+      const parts = ref.manifestRelative.split('/');
+      let slotKey = null;
+
+      for (let i = 0; i < parts.length - 1; i++) {
+        if (/^\d{3}_/.test(parts[i])) {
+          // This is a numbered directory
+          if (parts[i].endsWith('_list')) {
+            // It's a list - no slot collision possible
+            slotKey = null;
+            break;
+          } else {
+            // It's a slot section
+            // Check if next part is also a numbered subsection
+            if (i + 1 < parts.length - 1 && /^\d+[_-]/.test(parts[i + 1])) {
+              // Include the subsection in the slot key
+              slotKey = parts.slice(0, i + 2).join('/');
+            } else {
+              // Just the section itself is the slot
+              slotKey = parts.slice(0, i + 1).join('/');
+            }
+          }
+        }
+      }
+
+      if (slotKey && occupiedSlots.has(slotKey)) {
+        // Slot collision - skip this ref
+        continue;
+      }
+
+      if (slotKey) {
+        occupiedSlots.add(slotKey);
+      }
+
+      finalRefs.push(ref.line);
+    }
+
+    // Rebuild template with sorted, deduped refs
+    const cleanTemplate = [...nonRefs.filter(l => l.trim() !== ''), ...finalRefs].join('\n');
+    await fs.writeFile(templatePath, cleanTemplate, 'utf8');
+  }
+
+  toTitleCase(str) {
+    return str.replace(/[_-]/g, ' ')
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
+  formatCompiledContent(content) {
+    const lines = content.split('\n');
+    const formatted = [];
+    let currentMainSection = null; // Track # level section
+    let currentSubSection = null;  // Track ## level section
+    let lastLineWasBlank = false;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const headerMatch = line.match(/^(#{1,6})\s*(.+)/);
+
+      if (headerMatch) {
+        const level = headerMatch[1].length;
+        const title = headerMatch[2].trim();
+
+        // Handle section headers that were added during compilation
+        // Only treat as main section if it matches known section patterns
+        const knownSections = ['Main', 'Pattern List', 'Output', 'Story', 'Play List', 'Look', 'User', 'Jail', 'End'];
+        const isMainSection = level === 1 && knownSections.includes(title);
+
+        if (isMainSection) {
+          // Main section header
+          // Add blank line BEFORE section (not after), except at very start
+          if (formatted.length > 0) {
+            // Always add blank line before main sections except the first one
+            if (!lastLineWasBlank) {
+              formatted.push('');
+            }
+          }
+          currentMainSection = title;
+          currentSubSection = null;
+          formatted.push(`# ${title}`);
+          lastLineWasBlank = false;
+        } else if (level === 2 && currentMainSection) {
+          // Subsection header under main section
+          // Add blank line before ## headers too (except at start)
+          if (formatted.length > 0 && !lastLineWasBlank) {
+            formatted.push('');
+          }
+          // But DON'T treat story subsections like "Learning From The Hub" as affecting hierarchy
+          if (currentMainSection !== 'Story') {
+            currentSubSection = title;
+          }
+          formatted.push(`## ${title}`);
+          lastLineWasBlank = false;
+        } else {
+          // Content headers that need adjustment
+          let adjustedLevel = level;
+
+          // If we're inside a main section, adjust the level
+          if (currentMainSection) {
+            if (currentSubSection) {
+              // We're in a ## subsection, so content headers start at ###
+              // All content headers become ### under a subsection
+              adjustedLevel = 3;
+            } else {
+              // We're directly under a # section
+              // All content headers should become ##
+              adjustedLevel = 2; // All headers become ## under main section
+            }
+          } else {
+            // Not in a section, keep original level
+            adjustedLevel = level;
+          }
+
+          // Cap at ### for deeply nested headers
+          adjustedLevel = Math.min(3, adjustedLevel);
+
+          // Fix spacing (like ###Emojis -> ### Emojis)
+          formatted.push(`${'#'.repeat(adjustedLevel)} ${title}`);
+          lastLineWasBlank = false;
+        }
+      } else if (line.trim() === '') {
+        // Track blank lines
+        formatted.push(line);
+        lastLineWasBlank = true;
+      } else {
+        // Regular content
+        formatted.push(line);
+        lastLineWasBlank = false;
+      }
+    }
+
+    // Second pass: Remove duplicate headers and fix specific issues
+    const finalFormatted = [];
+    let previousHeader = null;
+
+    for (let i = 0; i < formatted.length; i++) {
+      const line = formatted[i];
+      const headerMatch = line.match(/^(#{1,3})\s+(.+)/);
+
+      if (headerMatch) {
+        const level = headerMatch[1].length;
+        const title = headerMatch[2];
+
+        // Skip duplicate consecutive headers at same level with same title
+        if (previousHeader &&
+            previousHeader.level === level &&
+            previousHeader.title === title) {
+          continue;
+        }
+
+        // Special handling for misplaced headers
+        // Don't add subsection headers that don't belong to current section
+        if (level === 2 && currentMainSection) {
+          // Check if this ## belongs under the current #
+          const belongsHere = ['Narration', 'Body'].includes(title);
+          if (!belongsHere && currentMainSection === 'Pattern List' && title === 'Narration') {
+            continue; // Skip ## Narration under Pattern List
+          }
+        }
+
+        previousHeader = { level, title };
+      } else {
+        previousHeader = null;
+      }
+
+      finalFormatted.push(line);
+    }
+
+    return finalFormatted.join('\n');
+  }
+
   async compilePersona(projectPath) {
     // Ensure variables are loaded before compiling
     await this.variablesLoaded;
-    
+
     const templatePath = this.getTemplatePath();
     const personaPath = this.getPersonaPath();
     const claudeLocalPath = path.join(projectPath, 'CLAUDE.local.md');
-    
+
+    // Clean and sort template before compiling
+    await this.cleanAndSortTemplate(templatePath);
+
+    let template = '';
     try {
-      const template = await fs.readFile(templatePath, 'utf8');
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch (error) {
+      // If template doesn't exist, create empty one
+      const projectDir = path.dirname(templatePath);
+      await fs.mkdir(projectDir, { recursive: true });
+      template = '# Persona Configuration\n';
+      await fs.writeFile(templatePath, template, 'utf8');
+    }
+
+    try {
       const lines = template.split('\n');
       const compiled = [];
       const seenSections = new Set();
-      
+
       for (const line of lines) {
+        // Skip any header lines in the template file itself
+        if (line.trim().startsWith('#') && !line.trim().startsWith('@')) {
+          continue;
+        }
+
         if (line.trim().startsWith('@')) {
           const refPath = line.trim().substring(1);
-          
+
           if (refPath.endsWith('/')) {
             continue;
           } else {
-            const filePath = path.join(this.baseDir, refPath);
+            // Try to resolve using MultiManifest first (for manifest-relative paths)
+            let filePath = await this.multiManifest.resolveManifestPath(refPath);
+
+            // If not found in manifests, try resolving relative to baseDir
+            if (!filePath) {
+              filePath = path.resolve(this.baseDir, refPath);
+              // Check if this resolved path exists
+              try {
+                await fs.access(filePath);
+              } catch {
+                console.warn(`File not found: ${refPath}`);
+                continue;
+              }
+            }
+
+            // Validate the path doesn't contain invalid patterns (multiple /manifest/ occurrences)
+            const manifestCount = (refPath.match(/\/manifest\//g) || []).length;
+            if (manifestCount > 1) {
+              console.warn(`Skipping malformed path with duplicate /manifest/: ${refPath}`);
+              continue;
+            }
+
             try {
               let content = await fs.readFile(filePath, 'utf8');
               // Apply variable substitution
               content = this.substituteVariables(content);
               
-              // Remove dependency lines from content
+              // Remove dependency lines and the first main title header only
               const contentLines = content.split('\n');
               const cleanLines = [];
-              let foundHeader = false;
-              
-              for (const cLine of contentLines) {
-                if (cLine.trim().startsWith('#')) {
-                  foundHeader = true;
+              let skippedFirstHeader = false;
+
+              // Process lines
+              for (let i = 0; i < contentLines.length; i++) {
+                const cLine = contentLines[i];
+
+                // Skip @ dependencies
+                if (cLine.trim().startsWith('@')) {
+                  continue;
                 }
-                if (foundHeader || !cLine.trim().startsWith('@')) {
-                  cleanLines.push(cLine);
+
+                // Skip the first # header only (the main title)
+                if (!skippedFirstHeader && cLine.match(/^#\s+/)) {
+                  skippedFirstHeader = true;
+                  // Also skip blank lines immediately after
+                  while (i + 1 < contentLines.length && contentLines[i + 1].trim() === '') {
+                    i++;
+                  }
+                  continue;
                 }
+
+                // Add all other lines
+                cleanLines.push(cLine);
               }
-              
+
               content = cleanLines.join('\n').trim();
-              
-              // Check if this is a subsection file
-              const pathParts = refPath.split('/');
-              if (pathParts.length >= 5) {
-                const sectionDir = pathParts[2];
 
-                // Look for the numbered subsection directory in the path
-                let subsectionDir = null;
-                let subsectionName = null;
+              // Check if content has no headers and add one based on filename
+              if (content && !content.match(/^#{1,3}\s+/m)) {
+                // For numbered subsections in 070_look, use the subsection name instead of filename
+                const pathParts = refPath.split('/');
+                const manifestIdx = pathParts.indexOf('manifest');
+                let headerName;
 
-                // Check each part of the path for numbered directories
-                for (let i = 3; i < pathParts.length - 1; i++) {
-                  const part = pathParts[i];
-                  const matchUnderscore = part.match(/^\d+_(.+)$/);
-                  const matchDash = part.match(/^\d+-(.+)$/);
-                  const match = matchUnderscore || matchDash;
+                if (manifestIdx >= 0 && manifestIdx + 2 < pathParts.length - 1) {
+                  const sectionDir = pathParts[manifestIdx + 1];
+                  const subsectionDir = pathParts[manifestIdx + 2];
 
-                  if (match) {
-                    subsectionDir = part;
-                    subsectionName = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-
-                    // For services, check if there's a subdirectory after it
-                    if (match[1] === 'services' && i < pathParts.length - 2) {
-                      const subdir = pathParts[i + 1];
-                      subsectionName = `${subsectionName} - ${subdir.charAt(0).toUpperCase() + subdir.slice(1)}`;
-                    }
-                    break;
+                  // Check if this is a 070_look numbered subsection
+                  if (sectionDir === '070_look' && /^\d+[_-]/.test(subsectionDir)) {
+                    // Use the subsection name (without number) as header
+                    headerName = this.toTitleCase(subsectionDir.replace(/^\d+[_-]/, ''));
                   }
                 }
 
-                if (subsectionName && !content.includes('###') && !content.includes('##')) {
+                // Fallback to filename if not a special case
+                if (!headerName) {
+                  const filename = path.basename(refPath, '.md');
+                  headerName = this.toTitleCase(filename);
+                }
+
+                content = `## ${headerName}\n${content}`;
+              }
+
+              // Add section headers for organization
+              const pathParts = refPath.split('/');
+
+              // Find the manifest index to properly locate section directory
+              const manifestIdx = pathParts.indexOf('manifest');
+              if (manifestIdx >= 0 && manifestIdx + 1 < pathParts.length) {
+                const sectionDir = pathParts[manifestIdx + 1];
+
+                // Check if this is a numbered section directory
+                if (/^\d{3}_/.test(sectionDir)) {
+                  // Add section header if we haven't seen this section yet
                   if (!seenSections.has(sectionDir)) {
                     seenSections.add(sectionDir);
 
+                    // Extract section name from directory (remove numbers and clean up)
                     let sectionName = '';
                     if (sectionDir.includes('_')) {
                       sectionName = sectionDir.split('_').slice(1).join('_');
@@ -250,217 +531,350 @@ export class PersonaManager extends PersonaCore {
                     } else {
                       sectionName = sectionDir;
                     }
-                    sectionName = sectionName.charAt(0).toUpperCase() + sectionName.slice(1);
+                    // Convert to title case
+                    sectionName = this.toTitleCase(sectionName);
 
-                    content = `## ${sectionName}\n### ${subsectionName}\n${content}`;
-                  } else {
-                    content = `### ${subsectionName}\n${content}`;
+                    // Add section header with newline separator before content
+                    content = compiled.length > 0 ? `\n# ${sectionName}\n${content}` : `# ${sectionName}\n${content}`;
+                  }
+
+                  // Don't add subsection headers for 040_output subdirectories
+                  // or 070_look subdirectories - these files already contain their own headers
+                  const skipSubsectionHeaders = ['040_output', '070_look'];
+
+                  if (!skipSubsectionHeaders.includes(sectionDir) && manifestIdx + 2 < pathParts.length - 1) {
+                    const subsectionDir = pathParts[manifestIdx + 2];
+
+                    // Check if this is a numbered subsection
+                    if (/^\d+[_-]/.test(subsectionDir)) {
+                      const subsectionKey = `${sectionDir}/${subsectionDir}`;
+
+                      if (!seenSections.has(subsectionKey)) {
+                        seenSections.add(subsectionKey);
+
+                        // Extract subsection name and convert to title case
+                        let subsectionName = subsectionDir.replace(/^\d+[_-]/, '');
+                        subsectionName = this.toTitleCase(subsectionName);
+
+                        // Add subsection header
+                        content = `## ${subsectionName}\n${content}`;
+                      }
+                    }
                   }
                 }
               }
               
               compiled.push(content);
             } catch (error) {
-              console.error(`Warning: Could not read ${refPath}`);
+              console.error(`ERROR: Could not read required file: ${refPath}`);
+              throw new Error(`Template references missing file: ${refPath}`);
             }
           }
         } else if (line.trim() !== '') {
+          // Add any other non-empty, non-header lines
           compiled.push(line);
         }
       }
-      
-      // Write compiled persona to plans directory
-      await fs.writeFile(personaPath, compiled.join('\n'));
-      
-      // Create CLAUDE.local.md with reference to persona
-      const relativePersonaPath = path.relative(projectPath, personaPath).replace(/\\/g, '/');
-      const claudeLocalContent = `@${relativePersonaPath}`;
-      await fs.writeFile(claudeLocalPath, claudeLocalContent);
+
+      // Format the compiled content using the pure function
+      const formattedContent = formatMarkdown(compiled);
+
+      // Write formatted persona to plans directory (for backup/reference)
+      await fs.writeFile(personaPath, formattedContent);
+
+      // Write the formatted persona directly to CLAUDE.local.md for real-time updates
+      // No more @ import - write the actual content
+      await fs.writeFile(claudeLocalPath, formattedContent);
       
       return true;
     } catch (error) {
       console.error('Compilation error:', error);
-      return false;
+      throw error;
     }
   }
   async handleAdd({ section, subsection, partial }) {
     const projectPath = process.cwd();
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
-    const manifestPath = path.join(this.baseDir, 'manifest');
-    
+
     // Ensure project directory exists
     await fs.mkdir(projectDir, { recursive: true });
-    
-    // Find matching section directory
-    const sectionInfo = await this.findManifestDir(manifestPath, section);
-    if (!sectionInfo) {
-      throw new Error(`Section '${section}' not found in manifest`);
-    }
-    
-    const sectionPath = path.join(manifestPath, sectionInfo.dir);
-    
-    // Handle "random" keyword
-    if (partial === 'random') {
-      // If section has subsections and no specific subsection was specified
-      if (!subsection) {
-        const items = await fs.readdir(sectionPath, { withFileTypes: true });
-        const subsectionDirs = [];
-        
-        for (const item of items) {
-          if (item.isDirectory()) {
-            const subPath = path.join(sectionPath, item.name);
-            try {
-              const subFiles = await fs.readdir(subPath);
-              const mdFiles = subFiles.filter(f => f.endsWith('.md'));
-              if (mdFiles.length > 0) {
-                subsectionDirs.push(item.name);
-              }
-            } catch (e) {
-              // Skip directories we can't read
-            }
-          }
-        }
-        
-        // If this section has subsections, add random file from each
-        if (subsectionDirs.length > 0) {
-          const results = [];
-          for (const subDir of subsectionDirs) {
-            const subPath = path.join(sectionPath, subDir);
-            const files = await fs.readdir(subPath);
-            const mdFiles = files.filter(f => f.endsWith('.md'));
-            
-            if (mdFiles.length > 0) {
-              const randomFile = mdFiles[Math.floor(Math.random() * mdFiles.length)];
-              
-              // Parse subsection name from directory
-              let subsectionName = '';
-              if (subDir.match(/^\d+[_-]/)) {
-                subsectionName = subDir.replace(/^\d+[_-]/, '');
-              } else {
-                subsectionName = subDir;
-              }
-              
-              // Recursively call handleAdd for this subsection
-              await this.handleAdd({ 
-                section, 
-                subsection: subsectionName, 
-                partial: randomFile.replace('.md', '') 
-              });
-              
-              results.push(`${subsectionName}: ${randomFile}`);
-            }
-          }
-          
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Added random files from ${section}:\n${results.join('\n')}`
-              }
-            ]
-          };
-        }
+
+    // Get all available sections using MultiManifest
+    const sections = await this.multiManifest.listSections();
+    const sectionNames = sections.map(s => s.name);
+
+    // Fuzzy match the section - prefer exact match
+    let matchedSection = sectionNames.find(s => s === section);
+    if (!matchedSection) {
+      matchedSection = this.fuzzyMatch(sectionNames, section);
+      if (!matchedSection) {
+        throw new Error(`No section matching '${section}' found. Available: ${sectionNames.join(', ')}`);
       }
-      
-      // Otherwise select random file from current path
-      let randomSearchPath = sectionPath;
-      if (subsection) {
-        const subInfo = await this.findSubsectionDir(sectionPath, subsection);
-        if (!subInfo) {
-          throw new Error(`Subsection '${subsection}' not found in section '${section}'`);
-        }
-        randomSearchPath = path.join(sectionPath, subInfo.dir);
-      }
-      
-      const files = await fs.readdir(randomSearchPath);
-      const mdFiles = files.filter(f => f.endsWith('.md'));
-      
-      if (mdFiles.length === 0) {
-        throw new Error(`No .md files found in ${subsection ? `${section}/${subsection}` : section}`);
-      }
-      
-      const randomIndex = Math.floor(Math.random() * mdFiles.length);
-      partial = mdFiles[randomIndex].replace('.md', '');
     }
 
-    let searchPath = sectionPath;
-    let subsectionInfo = null;
-    
-    // If subsection specified, find it
+    // Fuzzy match subsection BEFORE handling random
+    let matchedSubsection = subsection;
     if (subsection) {
-      subsectionInfo = await this.findSubsectionDir(sectionPath, subsection);
-      if (!subsectionInfo) {
-        throw new Error(`Subsection '${subsection}' not found in section '${section}'`);
+      const subsections = await this.multiManifest.listSubsections(matchedSection);
+      const subsectionNames = subsections.map(s => s.name);
+      matchedSubsection = this.fuzzyMatch(subsectionNames, subsection);
+
+      if (!matchedSubsection) {
+        throw new Error(`No subsection matching '${subsection}' found in ${matchedSection}`);
       }
-      searchPath = path.join(sectionPath, subsectionInfo.dir);
     }
-    
-    // Find matching files
-    const matchingFiles = await this.findMatchingFiles(searchPath, partial);
-    
-    if (matchingFiles.length === 0) {
-      throw new Error(`No file matching '${partial}' found in ${subsection ? `${section}/${subsection}` : section}`);
+
+    // Handle "random" partial
+    if (partial === 'random') {
+      let files;
+
+      if (matchedSubsection) {
+        // Get random file from specific subsection
+        files = await this.multiManifest.findFiles(matchedSection, matchedSubsection);
+      } else {
+        // Check if section has subsections
+        const subsections = await this.multiManifest.listSubsections(matchedSection);
+
+        if (subsections.length > 0) {
+          // Add random file from each subsection
+          const results = [];
+          for (const sub of subsections) {
+            const subFiles = await this.multiManifest.findFiles(matchedSection, sub.name);
+            if (subFiles.length > 0) {
+              const randomFile = subFiles[Math.floor(Math.random() * subFiles.length)];
+
+              // Build reference path
+              const relativePath = path.relative(this.baseDir, randomFile.path).replace(/\\/g, '/');
+              const newReference = `@./${relativePath}`;
+
+              // Add to template
+              await this.addReferenceToTemplate(templatePath, newReference);
+              results.push(`${sub.name}: ${randomFile.filename}`);
+            }
+          }
+
+          // Compile after adding all
+          await this.compilePersona(projectPath);
+
+          return {
+            content: [{
+              type: 'text',
+              text: `Added random files from ${matchedSection}:\n${results.join('\n')}`
+            }]
+          };
+        } else {
+          // Get random from section root
+          files = await this.multiManifest.findFiles(matchedSection, null);
+        }
+      }
+
+      if (!files || files.length === 0) {
+        throw new Error(`No files found in ${matchedSection}${subsection ? '/' + subsection : ''}`);
+      }
+
+      const randomFile = files[Math.floor(Math.random() * files.length)];
+      partial = randomFile.filename;
     }
-    
-    if (matchingFiles.length > 1) {
-      throw new Error(`Multiple files matching '${partial}' found. Please be more specific.`);
+
+    // Find the specific file
+    const fileInfo = await this.multiManifest.findFile(matchedSection, matchedSubsection, partial);
+    if (!fileInfo) {
+      throw new Error(`No file matching '${partial}' found in ${matchedSection}${matchedSubsection ? '/' + matchedSubsection : ''}`);
     }
-    
-    const matchingFile = matchingFiles[0];
-    
-    // Calculate relative path from MCP server root
-    const relativePath = path.relative(this.baseDir, matchingFile).replace(/\\/g, '/');
+
+    // If no subsection was specified but the file is in one, use it
+    if (!matchedSubsection && fileInfo.subsection) {
+      matchedSubsection = fileInfo.subsection.split(/[\/\\]/)[0]; // Get top-level subsection
+    }
+
+    // Build reference path
+    const relativePath = path.relative(this.baseDir, fileInfo.path).replace(/\\/g, '/');
     const newReference = `@./${relativePath}`;
-    
+
+    // Extract dependencies recursively
+    const allDependencies = new Set();
+    const processedFiles = new Set();
+
+    async function extractDepsRecursive(filePath) {
+      if (processedFiles.has(filePath)) return; // Avoid circular deps
+      processedFiles.add(filePath);
+
+      try {
+        const content = await fs.readFile(filePath, 'utf8');
+        const lines = content.split('\n');
+        const fileDir = path.dirname(filePath);
+
+        for (const line of lines) {
+          if (line.trim().startsWith('@')) {
+            const depPath = line.trim().substring(1);
+            let fullDepPath;
+
+            // Check if the dependency starts with ./manifest/ - these are root-relative
+            if (depPath.startsWith('./manifest/')) {
+              // Find the manifest root (could be in either manifest directory)
+              const manifestRelativePath = depPath.replace('./manifest/', '');
+
+              // Try to find the file in any of our manifest directories
+              let found = false;
+              for (const manifestDir of this.manifestDirs) {
+                const candidatePath = path.join(manifestDir, manifestRelativePath);
+                try {
+                  await fs.access(candidatePath);
+                  fullDepPath = candidatePath;
+                  found = true;
+                  break;
+                } catch {
+                  // Try next manifest dir
+                }
+              }
+
+              if (!found) {
+                console.warn(`Dependency not found in any manifest: ${depPath}`);
+                continue;
+              }
+            } else {
+              // Regular relative path
+              fullDepPath = path.resolve(fileDir, depPath);
+            }
+
+            // Convert back to a reference path relative to base
+            const relativeDepPath = path.relative(this.baseDir, fullDepPath).replace(/\\/g, '/');
+            allDependencies.add(`./${relativeDepPath}`);
+
+            // Recursively process this dependency
+            await extractDepsRecursive.call(this, fullDepPath);
+          } else if (line.trim().startsWith('#')) {
+            break; // Stop at first header
+          }
+        }
+      } catch (error) {
+        console.warn(`Could not read dependency: ${filePath}`);
+      }
+    }
+
+    // Extract all dependencies recursively
+    await extractDepsRecursive.call(this, fileInfo.path);
+
+    // Check if this is a SLOT directory or subsection
+    // For subsections, we only want to remove from that specific subsection slot
+    // For main sections without subsections, remove the whole section
+    if (matchedSubsection) {
+      // Adding to a subsection - only remove that subsection's slot
+      await this.removeSlotReferencesFromTemplate(templatePath, matchedSection, matchedSubsection);
+    } else if (this.isSlotDirectory(matchedSection)) {
+      // Adding to main section slot - remove whole section
+      await this.removeSlotReferencesFromTemplate(templatePath, matchedSection, null);
+    }
+
+    // Add all dependencies first
+    for (const dep of allDependencies) {
+      const depRef = `@${dep}`;
+      await this.addReferenceToTemplate(templatePath, depRef);
+    }
+
+    // Then add the main file
+    await this.addReferenceToTemplate(templatePath, newReference);
+
+    // Compile the persona
+    await this.compilePersona(projectPath);
+
+    // Return the filename without extension for the response
+    const displayName = path.basename(fileInfo.path, '.md');
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Added ${displayName} to ${matchedSection}${matchedSubsection ? '/' + matchedSubsection : ''} and compiled persona.`
+      }]
+    };
+  }
+
+  async removeSlotReferencesFromTemplate(templatePath, section, subsection = null) {
+    // Read current template
+    let template = '';
+    try {
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch (error) {
+      return; // No template to clean
+    }
+
+    const lines = template.split('\n');
+    const cleanedLines = [];
+
+    for (const line of lines) {
+      if (line.trim().startsWith('@')) {
+        // Check if this reference is for the same SLOT
+        const refPath = line.trim();
+
+        // Build pattern to match - handles both manifest dirs
+        const slotPattern = subsection
+          ? `/${section}/${subsection}/`
+          : `/${section}/`;
+
+        if (refPath.includes(slotPattern)) {
+          // Skip this line - it's in the same SLOT we're about to fill
+          console.log(`Removing existing SLOT reference: ${refPath}`);
+          continue;
+        }
+      }
+      cleanedLines.push(line);
+    }
+
+    // Write cleaned template
+    await fs.writeFile(templatePath, cleanedLines.join('\n'), 'utf8');
+  }
+
+  async addReferenceToTemplate(templatePath, newReference) {
     // Read current template
     let template = '';
     try {
       template = await fs.readFile(templatePath, 'utf8');
     } catch (error) {
       // Create template if it doesn't exist
-      template = '# Persona Configuration\n\n';
+      template = '# Persona Configuration\n';
+      await fs.writeFile(templatePath, template, 'utf8');
     }
-    
-    // Use inherited method to add file and dependencies
-    const updatedTemplate = await this.addFileToTemplate(template, newReference, matchingFile);
-    
-    // Write updated template
-    await fs.writeFile(templatePath, updatedTemplate);
-    
-    // Compile the persona
-    await this.compilePersona(projectPath);
-    
-    return {
-      content: [
-        {
-          type: 'text',
-          text: `Added ${path.basename(matchingFile)} to ${subsection ? `${section}/${subsection}` : section} and compiled persona.`,
-        },
-      ],
-    };
+
+    // Check if reference already exists
+    if (!template.includes(newReference)) {
+      // Add new reference
+      template = template.trimEnd() + '\n' + newReference;
+      await fs.writeFile(templatePath, template, 'utf8');
+
+      // Clean and sort the template after adding
+      await this.cleanAndSortTemplate(templatePath);
+    }
   }
+
   async handleRemove({ section, subsection, partial }) {
     const projectPath = process.cwd();
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
-    const manifestPath = path.join(this.baseDir, 'manifest');
-    
+
     // Ensure project directory exists
     await fs.mkdir(projectDir, { recursive: true });
-    
+
     // Read template
-    const template = await fs.readFile(templatePath, 'utf8');
+    let template = '';
+    try {
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: 'No template file exists to remove from.'
+        }]
+      };
+    }
+
     const lines = template.split('\n');
-    
-    // Find the file(s) to remove
     let filesToRemove = [];
-    let dependenciesToRemove = [];
-    
+
     if (partial) {
-      // Find specific file by partial name
+      // Find specific file by partial name in template
       for (const line of lines) {
-        if (line.trim().startsWith('@./manifest/') && line.includes(partial)) {
+        if (line.trim().startsWith('@') && line.includes(partial)) {
           filesToRemove.push(line.trim());
           break;
         }
@@ -469,35 +883,42 @@ export class PersonaManager extends PersonaCore {
         throw new Error(`File containing '${partial}' not found in template`);
       }
     } else {
-      // Find all files in section/subsection
-      const sectionInfo = await this.findManifestDir(manifestPath, section);
-      if (!sectionInfo) {
-        throw new Error(`Section '${section}' not found`);
-      }
-      
-      let subsectionInfo = null;
-      if (subsection) {
-        const sectionPath = path.join(manifestPath, sectionInfo.dir);
-        subsectionInfo = await this.findSubsectionDir(sectionPath, subsection);
-        if (!subsectionInfo) {
-          throw new Error(`Subsection '${subsection}' not found in section '${section}'`);
+      // Use MultiManifest to verify section exists
+      const sections = await this.multiManifest.listSections();
+      const sectionNames = sections.map(s => s.name);
+
+      // Prefer exact match
+      let matchedSection = sectionNames.find(s => s === section);
+      if (!matchedSection) {
+        matchedSection = this.fuzzyMatch(sectionNames, section);
+        if (!matchedSection) {
+          throw new Error(`Section '${section}' not found`);
         }
       }
-      
-      // Find matching files
+
+      let matchedSubsection = subsection;
+      if (subsection) {
+        const subsections = await this.multiManifest.listSubsections(matchedSection);
+        matchedSubsection = this.fuzzyMatch(subsections.map(s => s.name), subsection);
+        if (!matchedSubsection) {
+          throw new Error(`Subsection '${subsection}' not found in ${matchedSection}`);
+        }
+      }
+
+      // Find matching files in template
       for (const line of lines) {
-        if (line.trim().startsWith('@./manifest/')) {
-          const parsed = this.parseReference(line);
-          if (parsed && parsed.sectionDir === sectionInfo.dir) {
-            if (!subsection || (subsectionInfo && parsed.subsectionDir === subsectionInfo.dir)) {
+        if (line.trim().startsWith('@')) {
+          // Check if this line matches the section/subsection
+          if (line.includes(`/${matchedSection}/`)) {
+            if (!matchedSubsection || line.includes(`/${matchedSection}/${matchedSubsection}/`)) {
               filesToRemove.push(line.trim());
             }
           }
         }
       }
-      
+
       if (filesToRemove.length === 0) {
-        throw new Error(`${subsection ? `${section}/${subsection}` : section} not found in template`);
+        throw new Error(`${matchedSubsection ? `${matchedSection}/${matchedSubsection}` : matchedSection} not found in template`);
       }
     }
     
@@ -540,13 +961,84 @@ export class PersonaManager extends PersonaCore {
       ],
     };
   }
+  async handleCreate({ section, subsection, filename, secondperson_prompt_from_system_to_assistant }) {
+    // Strip _list suffix if present for fuzzy matching
+    if (section && section.endsWith('_list')) {
+      section = section.slice(0, -5); // Remove '_list'
+    }
+
+    // Get all available sections using MultiManifest
+    const sections = await this.multiManifest.listSections();
+    const sectionNames = sections.map(s => s.name);
+
+    // Fuzzy match the section - prefer exact match
+    let matchedSection = sectionNames.find(s => s === section);
+    if (!matchedSection) {
+      matchedSection = this.fuzzyMatch(sectionNames, section);
+      if (!matchedSection) {
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: Section '${section}' does not exist. Available: ${sectionNames.join(', ')}`
+          }]
+        };
+      }
+    }
+
+    // Ensure .md extension
+    const fullFilename = filename.endsWith('.md') ? filename : `${filename}.md`;
+
+    // Format the content with a header
+    const sectionName = matchedSection.replace(/^\\d{3}_/, '');
+    const header = subsection
+      ? `# ${sectionName}/${subsection}\\n## ${path.basename(filename, '.md')}`
+      : `# ${sectionName}\\n## ${path.basename(filename, '.md')}`;
+
+    const content = `${header}
+
+${secondperson_prompt_from_system_to_assistant}`;
+
+    // Use MultiManifest to write the file
+    const result = await this.multiManifest.writeFile(
+      matchedSection,
+      subsection,
+      fullFilename,
+      content,
+      true // createDir
+    );
+
+    if (!result.success) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Error creating file: ${result.error}`
+        }]
+      };
+    }
+
+    // Create the partial name for the add command
+    const partialName = path.basename(filename, '.md');
+
+    // Build the add command example - use original section name for user clarity
+    const addCommand = subsection
+      ? `mcp__pageant__add section:"${section}" subsection:"${subsection}" partial:"${partialName}"`
+      : `mcp__pageant__add section:"${section}" partial:"${partialName}"`;
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Created new persona section at ${result.path}\\n\\nContent:\\n${content}\\n\\n✅  File created but NOT added to current persona yet.\\n\\nTo add this to your persona, use:\\n${addCommand}`
+      }]
+    };
+  }
+
   async handleSetVar({ variable, value }) {
     const projectPath = process.cwd();
     const projectDirName = this.getProjectDirName();
-    const projectVarsPath = path.join(this.baseDir, 'plans', projectDirName, 'vars.txt');
-    
+    const projectVarsPath = path.join(this.plansDir, projectDirName, 'vars.txt');
+
     // Ensure project directory exists
-    const projectDir = path.join(this.baseDir, 'plans', projectDirName);
+    const projectDir = path.join(this.plansDir, projectDirName);
     try {
       await fs.mkdir(projectDir, { recursive: true });
     } catch (error) {
@@ -612,134 +1104,125 @@ export class PersonaManager extends PersonaCore {
   }
   
   async handleList({ section, subsection } = {}) {
-    const manifestPath = path.join(this.baseDir, 'manifest');
     const result = {
       sections: {},
       totalFiles: 0
     };
+
     try {
-      // If no section specified, list all sections and their files
       if (!section) {
-        const dirs = await fs.readdir(manifestPath);
-        
-        for (const dir of dirs) {
-          const dirPath = path.join(manifestPath, dir);
-          const stat = await fs.stat(dirPath);
-          
-          if (stat.isDirectory()) {
-            // Parse section name from directory
-            let sectionName = '';
-            if (dir.includes('_')) {
-              sectionName = dir.split('_').slice(1).join('_');
-            } else if (dir.includes('-')) {
-              sectionName = dir.split('-').slice(1).join('-');
+        // List all sections
+        const sections = await this.multiManifest.listSections();
+
+        for (const sectionInfo of sections) {
+          const sectionName = sectionInfo.name;
+          result.sections[sectionName] = {
+            directory: sectionName,
+            files: [],
+            subsections: {}
+          };
+
+          // Get all files in this section
+          const files = await this.multiManifest.findFiles(sectionName);
+
+          // Separate root files from subsection files
+          for (const fileInfo of files) {
+            if (!fileInfo.subsection) {
+              // Direct section file
+              result.sections[sectionName].files.push(fileInfo.filename + '.md');
+              result.totalFiles++;
             } else {
-              sectionName = dir;
-            }
-            
-            result.sections[sectionName] = {
-              directory: dir,
-              files: [],
-              subsections: {}
-            };
-            
-            // List files and subdirectories in this section
-            const items = await fs.readdir(dirPath, { withFileTypes: true });
-            
-            for (const item of items) {
-              if (item.isFile() && item.name.endsWith('.md')) {
-                result.sections[sectionName].files.push(item.name);
-                result.totalFiles++;
-              } else if (item.isDirectory()) {
-                // Check for files in subsection
-                const subPath = path.join(dirPath, item.name);
-                const subFiles = await fs.readdir(subPath);
-                const mdFiles = subFiles.filter(f => f.endsWith('.md'));
-                
-                if (mdFiles.length > 0) {
-                  // Parse subsection name
-                  let subsectionName = '';
-                  if (item.name.match(/^\d+[_-]/)) {
-                    subsectionName = item.name.replace(/^\d+[_-]/, '');
-                  } else {
-                    subsectionName = item.name;
-                  }
-                  
-                  result.sections[sectionName].subsections[subsectionName] = {
-                    directory: item.name,
-                    files: mdFiles
-                  };
-                  result.totalFiles += mdFiles.length;
-                }
+              // File in a subsection (could be nested deeply)
+              // Extract the top-level subsection from the path
+              const subsectionParts = fileInfo.subsection.split(/[\/\\]/);
+              const topLevelSubsection = subsectionParts[0];
+
+              if (!result.sections[sectionName].subsections[topLevelSubsection]) {
+                result.sections[sectionName].subsections[topLevelSubsection] = {
+                  directory: topLevelSubsection,
+                  files: []
+                };
               }
+              // Include the relative path to show nested structure
+              const displayPath = subsectionParts.length > 1
+                ? `${subsectionParts.slice(1).join('/')}/${fileInfo.filename}.md`
+                : `${fileInfo.filename}.md`;
+              result.sections[sectionName].subsections[topLevelSubsection].files.push(displayPath);
+              result.totalFiles++;
             }
           }
         }
       } else {
         // List files in specific section
-        const sectionInfo = await this.findManifestDir(manifestPath, section);
-        if (!sectionInfo) {
+        const sections = await this.multiManifest.listSections();
+        const sectionNames = sections.map(s => s.name);
+
+        // Prefer exact match
+        let matchedSection = sectionNames.find(s => s === section);
+        if (!matchedSection) {
+          matchedSection = this.fuzzyMatch(sectionNames, section);
+        }
+
+        if (!matchedSection) {
           throw new Error(`Section '${section}' not found`);
         }
-        
-        const sectionPath = path.join(manifestPath, sectionInfo.dir);
-        
+
         if (subsection) {
           // List files in specific subsection
-          const subsectionInfo = await this.findSubsectionDir(sectionPath, subsection);
-          if (!subsectionInfo) {
-            throw new Error(`Subsection '${subsection}' not found in section '${section}'`);
+          const subsections = await this.multiManifest.listSubsections(matchedSection);
+          const matchedSubsection = this.fuzzyMatch(subsections.map(s => s.name), subsection);
+
+          if (!matchedSubsection) {
+            throw new Error(`Subsection '${subsection}' not found in section '${matchedSection}'`);
           }
-          
-          const subsectionPath = path.join(sectionPath, subsectionInfo.dir);
-          const files = await fs.readdir(subsectionPath);
-          const mdFiles = files.filter(f => f.endsWith('.md'));
-          
-          result.sections[section] = {
-            directory: sectionInfo.dir,
+
+          const files = await this.multiManifest.findFiles(matchedSection, matchedSubsection);
+          const mdFiles = files.map(f => f.filename + '.md');
+
+          result.sections[matchedSection] = {
             subsections: {
-              [subsection]: {
-                directory: subsectionInfo.dir,
+              [matchedSubsection]: {
+                directory: matchedSubsection,
                 files: mdFiles
               }
-            }
+            },
+            files: []
           };
           result.totalFiles = mdFiles.length;
         } else {
-          // List all files and subsections in this section
-          result.sections[section] = {
-            directory: sectionInfo.dir,
+          // List all files and subsections in the section
+          result.sections[matchedSection] = {
+            directory: matchedSection,
             files: [],
             subsections: {}
           };
-          
-          const items = await fs.readdir(sectionPath, { withFileTypes: true });
-          
-          for (const item of items) {
-            if (item.isFile() && item.name.endsWith('.md')) {
-              result.sections[section].files.push(item.name);
+
+          const files = await this.multiManifest.findFiles(matchedSection);
+          const subsections = await this.multiManifest.listSubsections(matchedSection);
+
+          // Process all files using the subsection field from fileInfo
+          for (const fileInfo of files) {
+            if (!fileInfo.subsection) {
+              // Direct section file
+              result.sections[matchedSection].files.push(fileInfo.filename + '.md');
               result.totalFiles++;
-            } else if (item.isDirectory()) {
-              // Check for files in subsection
-              const subPath = path.join(sectionPath, item.name);
-              const subFiles = await fs.readdir(subPath);
-              const mdFiles = subFiles.filter(f => f.endsWith('.md'));
-              
-              if (mdFiles.length > 0) {
-                // Parse subsection name
-                let subsectionName = '';
-                if (item.name.match(/^\d+[_-]/)) {
-                  subsectionName = item.name.replace(/^\d+[_-]/, '');
-                } else {
-                  subsectionName = item.name;
-                }
-                
-                result.sections[section].subsections[subsectionName] = {
-                  directory: item.name,
-                  files: mdFiles
+            } else {
+              // File in a subsection (could be nested deeply)
+              const subsectionParts = fileInfo.subsection.split(/[\/\\]/);
+              const topLevelSubsection = subsectionParts[0];
+
+              if (!result.sections[matchedSection].subsections[topLevelSubsection]) {
+                result.sections[matchedSection].subsections[topLevelSubsection] = {
+                  directory: topLevelSubsection,
+                  files: []
                 };
-                result.totalFiles += mdFiles.length;
               }
+              // Include the relative path to show nested structure
+              const displayPath = subsectionParts.length > 1
+                ? `${subsectionParts.slice(1).join('/')}/${fileInfo.filename}.md`
+                : `${fileInfo.filename}.md`;
+              result.sections[matchedSection].subsections[topLevelSubsection].files.push(displayPath);
+              result.totalFiles++;
             }
           }
         }
@@ -747,32 +1230,39 @@ export class PersonaManager extends PersonaCore {
       
       // Format the output as readable text
       let output = [];
-      
+
       if (!section) {
         output.push(`Found ${result.totalFiles} persona files across ${Object.keys(result.sections).length} sections:\n`);
       } else if (subsection) {
         output.push(`Files in ${section}/${subsection}:\n`);
       } else {
-        output.push(`Files in section '${section}':\n`);
+        output.push(`Files in ${section}:\n`);
       }
-      
+
       for (const [sectionName, sectionData] of Object.entries(result.sections)) {
-        output.push(`\n## ${sectionName} (${sectionData.directory})`);
-        
-        // List direct files in section
-        if (sectionData.files && sectionData.files.length > 0) {
-          output.push('Files:');
-          for (const file of sectionData.files) {
-            output.push(`  - ${file}`);
-          }
-        }
-        
-        // List subsections and their files
-        if (sectionData.subsections && Object.keys(sectionData.subsections).length > 0) {
-          for (const [subName, subData] of Object.entries(sectionData.subsections)) {
-            output.push(`\n### ${subName} (${subData.directory})`);
-            for (const file of subData.files) {
-              output.push(`  - ${file}`);
+        // We always process because when section is specified, result.sections
+        // only contains the matched section
+        if (true) {
+          if (section && subsection && sectionData.subsections[subsection]) {
+            // Show specific subsection
+            for (const file of sectionData.subsections[subsection].files) {
+              output.push(`  - ${file.replace('.md', '')}`);
+            }
+          } else if (!subsection) {
+            // Show section with all subsections
+            output.push(`\n${sectionName}:`);
+
+            if (sectionData.files.length > 0) {
+              for (const file of sectionData.files) {
+                output.push(`  - ${file.replace('.md', '')}`);
+              }
+            }
+
+            for (const [subName, subData] of Object.entries(sectionData.subsections)) {
+              output.push(`  ${subName}:`);
+              for (const file of subData.files) {
+                output.push(`    - ${file.replace('.md', '')}`);
+              }
             }
           }
         }
@@ -790,10 +1280,112 @@ export class PersonaManager extends PersonaCore {
       return {
         content: [
           {
-            type: 'text',  
+            type: 'text',
             text: `Error listing files: ${error.message}`,
           },
         ],
+      };
+    }
+  }
+
+  async handleInspect() {
+    try {
+      const templatePath = this.getTemplatePath();
+
+      // Read template
+      let template = '';
+      try {
+        template = await fs.readFile(templatePath, 'utf8');
+      } catch (error) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No template found for this project. Use `add` to start building your persona.'
+          }]
+        };
+      }
+
+      const lines = template.split('\n');
+      const references = [];
+
+      // Parse all @ references
+      for (const line of lines) {
+        if (line.trim().startsWith('@')) {
+          const refPath = line.trim().substring(1);
+
+          // Extract section from path
+          const manifestMatch = refPath.match(/\/manifest\/([^\/]+)/);
+          if (manifestMatch) {
+            const sectionDir = manifestMatch[1];
+
+            // Determine if SLOT or LIST
+            const isSlot = /^\d{3}_/.test(sectionDir) && !sectionDir.endsWith('_list');
+            const isList = sectionDir.endsWith('_list');
+
+            references.push({
+              path: refPath,
+              section: sectionDir,
+              type: isSlot ? 'SLOT' : (isList ? 'LIST' : 'UNKNOWN')
+            });
+          }
+        }
+      }
+
+      if (references.length === 0) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'Template is empty. Use `add` to start building your persona.'
+          }]
+        };
+      }
+
+      // Group by section
+      const grouped = {};
+      for (const ref of references) {
+        if (!grouped[ref.section]) {
+          grouped[ref.section] = {
+            type: ref.type,
+            files: []
+          };
+        }
+        // Extract filename from path
+        const filename = path.basename(ref.path, '.md');
+        grouped[ref.section].files.push(filename);
+      }
+
+      // Format output
+      const projectPath = process.cwd();
+      const projectName = this.getProjectDirName();
+
+      let output = [`Current Template (${projectName}):\n`];
+
+      for (const [section, data] of Object.entries(grouped)) {
+        const sectionName = section.replace(/^\d{3}_/, '').replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const typeLabel = data.type === 'SLOT' ? ' (SLOT - only one active)' : (data.type === 'LIST' ? ' (LIST - accumulates)' : '');
+
+        output.push(`\n# ${sectionName}${typeLabel}`);
+        for (const file of data.files) {
+          output.push(`  @${file}`);
+        }
+      }
+
+      output.push(`\n\nTotal: ${references.length} active references`);
+      output.push(`\nSLOT sections: Only one file can be active at a time (adding removes previous)`);
+      output.push(`LIST sections: Multiple files accumulate (adding keeps existing files)`);
+
+      return {
+        content: [{
+          type: 'text',
+          text: output.join('\n')
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: 'text',
+          text: `Error inspecting template: ${error.message}`
+        }]
       };
     }
   }

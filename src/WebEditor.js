@@ -90,14 +90,32 @@ export class WebEditor {
         const content = await fs.readFile(templatePath, 'utf8');
         const lines = content.split('\n');
         const items = lines
-          .filter(l => l.trim().startsWith('@./manifest/'))
+          .filter(l => l.trim().startsWith('@'))
           .map(ref => {
-            const parts = ref.trim().split('/');
+            // Parse any @-reference, handling various path formats
+            const refPath = ref.trim().substring(1); // Remove @
+            const parts = refPath.split('/');
+
+            // Find 'manifest' in the path and use parts after it
+            const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
+            let section = '', subsection = '', file = '';
+
+            if (manifestIndex >= 0 && manifestIndex < parts.length - 1) {
+              section = parts[manifestIndex + 1] || '';
+              subsection = parts[manifestIndex + 2] || '';
+              file = parts[parts.length - 1] || '';
+            } else {
+              // Fallback: just use last parts if no manifest found
+              section = parts[parts.length - 3] || '';
+              subsection = parts[parts.length - 2] || '';
+              file = parts[parts.length - 1] || '';
+            }
+
             return {
               ref: ref.trim(),
-              section: parts[2] || '',
-              subsection: parts[3] || '',
-              file: parts[parts.length - 1] || ''
+              section,
+              subsection,
+              file
             };
           });
         
@@ -127,65 +145,147 @@ export class WebEditor {
       }
     });
 
+    // Get current persona
+    this.app.get('/api/persona', async (req, res) => {
+      try {
+        const personaPath = this.manager.getPersonaPath();
+        const fs = await import('fs/promises');
+
+        try {
+          const content = await fs.readFile(personaPath, 'utf8');
+          res.json({ success: true, data: content });
+        } catch (error) {
+          // Return empty if persona doesn't exist yet
+          res.json({ success: true, data: '' });
+        }
+      } catch (error) {
+        res.json({ success: false, error: error.message });
+      }
+    });
+
+    // Tree building is now handled by MultiManifest in /api/manifest endpoint
+    // The old scanDirectory function has been removed as it's no longer needed
+
+    // List all available project directories in plans folder
+    // Switch to a different project
+    this.app.post('/api/switch-project', async (req, res) => {
+      try {
+        const { dirName } = req.body;
+        if (!dirName) {
+          return res.json({ success: false, error: 'Project directory name required' });
+        }
+
+        // Update the manager's current project directory
+        // This is a bit hacky but works for the web editor
+        const originalGetProjectDirName = this.manager.getProjectDirName.bind(this.manager);
+        this.manager.getProjectDirName = () => dirName;
+
+        // Reload template and persona for the new project
+        const templatePath = this.manager.getTemplatePath();
+        const personaPath = this.manager.getPersonaPath();
+
+        res.json({
+          success: true,
+          data: {
+            templatePath,
+            personaPath,
+            projectDir: dirName
+          }
+        });
+      } catch (error) {
+        res.json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.get('/api/projects', async (req, res) => {
+      try {
+        const fs = await import('fs/promises');
+        const projects = [];
+
+        // Read all directories in the plans folder
+        const plansPath = this.manager.plansDir;
+        const items = await fs.readdir(plansPath, { withFileTypes: true });
+
+        for (const item of items) {
+          if (item.isDirectory() && item.name !== 'node_modules') {
+            // Check if template.md exists
+            const templatePath = path.join(plansPath, item.name, 'template.md');
+            try {
+              await fs.access(templatePath);
+              // Convert directory name back to readable project path
+              const projectPath = item.name.replace(/--/g, '/').replace(/^([A-Z])-/, '$1:/');
+              projects.push({
+                dirName: item.name,
+                displayName: projectPath,
+                isCurrent: item.name === this.manager.getProjectDirName()
+              });
+            } catch {
+              // No template, skip
+            }
+          }
+        }
+
+        res.json({ success: true, data: projects });
+      } catch (error) {
+        res.json({ success: false, error: error.message });
+      }
+    });
+
     this.app.get('/api/manifest', async (req, res) => {
       try {
         const fs = await import('fs/promises');
-        const manifestPath = path.join(this.manager.baseDir, 'manifest');
         const sections = {};
-        
-        const dirs = await fs.readdir(manifestPath);
-        for (const dir of dirs) {
-          const dirPath = path.join(manifestPath, dir);
-          const stat = await fs.stat(dirPath);
-          
-          if (stat.isDirectory()) {
-            let sectionName = '';
-            if (dir.includes('_')) {
-              sectionName = dir.split('_').slice(1).join('_');
-            } else if (dir.includes('-')) {
-              sectionName = dir.split('-').slice(1).join('-');
-            } else {
-              sectionName = dir;
-            }
 
-            // Remove _list suffix for matching with PersonaManager
-            if (sectionName.endsWith('_list')) {
-              sectionName = sectionName.replace(/_list$/, '');
-            }
-            
-            // Directories ending in _list are LIST type (unordered collections)
-            // All others with number prefix are SLOT type (single value)
-            const isList = dir.match(/_list$/);
-            const hasNumberPrefix = dir.match(/^\d+_/);
-            
-            sections[sectionName] = {
-              dir: dir,
-              type: isList ? 'list' : hasNumberPrefix ? 'slot' : 'dir',
-              files: [],
-              subsections: {}
-            };
-            
-            // Read files and subdirectories
-            const items = await fs.readdir(dirPath, { withFileTypes: true });
-            for (const item of items) {
-              if (item.isFile() && item.name.endsWith('.md')) {
-                sections[sectionName].files.push(item.name.replace('.md', ''));
-              } else if (item.isDirectory()) {
-                const subPath = path.join(dirPath, item.name);
-                const subFiles = await fs.readdir(subPath);
-                const mdFiles = subFiles.filter(f => f.endsWith('.md'));
-                
-                const subName = item.name.replace(/^\d+_/, '');
-                sections[sectionName].subsections[subName] = {
-                  dir: item.name,
-                  type: item.name.match(/^\d+_/) ? 'slot' : 'dir',
-                  files: mdFiles.map(f => f.replace('.md', ''))
-                };
+        // Use MultiManifest to list all sections
+        console.log('Getting sections from MultiManifest');
+        const allSections = await this.manager.multiManifest.listSections();
+
+        for (const sectionInfo of allSections) {
+          const sectionName = sectionInfo.name;
+
+          // Determine type - sections ending in _list are lists, numbered are slots
+          const isList = sectionName.endsWith('_list') || sectionName.includes('list');
+          const hasNumberPrefix = true; // Most sections have number prefixes
+
+          sections[sectionName] = {
+            dir: sectionName, // Use section name for compatibility
+            type: isList ? 'list' : hasNumberPrefix ? 'slot' : 'dir',
+            tree: { files: [], children: {} }
+          };
+
+          // Get all files for this section (recursively)
+          const files = await this.manager.multiManifest.findAllFilesRecursive(sectionName);
+
+          // Build tree structure from files
+          for (const fileInfo of files) {
+            const relPath = fileInfo.relativePath.replace(/\\/g, '/');
+            const parts = relPath.split('/');
+
+            if (parts.length === 1) {
+              // Direct section file
+              sections[sectionName].tree.files.push(fileInfo.filename.replace('.md', ''));
+            } else {
+              // Subsection file
+              const pathWithoutFile = parts.slice(0, -1);
+
+              // Navigate/create tree structure
+              let current = sections[sectionName].tree.children;
+
+              for (let i = 0; i < pathWithoutFile.length; i++) {
+                const part = pathWithoutFile[i];
+                if (!current[part]) {
+                  current[part] = { files: [], children: {} };
+                }
+                if (i === pathWithoutFile.length - 1) {
+                  // Add file to the last directory
+                  current[part].files.push(fileInfo.filename.replace('.md', ''));
+                }
+                current = current[part].children;
               }
             }
           }
         }
-        
+
         res.json({ success: true, data: sections });
       } catch (error) {
         res.json({ success: false, error: error.message });
@@ -213,9 +313,10 @@ export class WebEditor {
         this.pingCheckInterval = setInterval(() => {
           const timeSinceLastPing = Date.now() - this.lastPing;
           if (timeSinceLastPing > 35000) { // 35 seconds (with 5s grace period)
-            console.log('No keep-alive ping received for 35 seconds, shutting down...');
+            console.log('No keep-alive ping received for 35 seconds, shutting down editor...');
             this.stop();
-            process.exit(0);
+            // Don't exit the process - just stop the web server
+            // process.exit(0);  // This was killing the entire MCP server!
           }
         }, 5000); // Check every 5 seconds
         

@@ -104,35 +104,58 @@
 
     .files-list {
       padding-left: 8px;
-      display: none;
+      display: block;  /* Always show for tree view */
     }
 
-    .section.expanded .files-list {
-      display: block;
+    .tree-item {
+      user-select: none;
     }
 
-    .file-item, .subsection-item {
-      padding: 3px 6px;
+    .tree-header {
+      padding: 2px 4px;
       cursor: pointer;
       border-radius: 2px;
-      margin: 1px 0;
       display: flex;
       align-items: center;
       gap: 4px;
       font-size: 11px;
     }
 
-    .file-item:hover, .subsection-item:hover {
+    .tree-header:hover {
       background: #333;
     }
 
-    .subsection-files {
-      padding-left: 8px;
+    .tree-children {
+      padding-left: 12px;
       display: none;
     }
 
-    .subsection-item.expanded .subsection-files {
+    .tree-item.expanded > .tree-children {
       display: block;
+    }
+
+    .tree-file {
+      padding: 2px 4px 2px 20px;
+      cursor: pointer;
+      border-radius: 2px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+    }
+
+    .tree-file:hover {
+      background: #333;
+    }
+
+    .tree-icon {
+      width: 10px;
+      display: inline-block;
+      transition: transform 0.2s;
+    }
+
+    .tree-item.expanded > .tree-header > .tree-icon {
+      transform: rotate(90deg);
     }
 
     .template-view {
@@ -270,8 +293,11 @@
   </div>
 
   <div class="main">
-    <div class="header">
+    <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
       <h1>Current Template</h1>
+      <select id="projectSelector" style="background: #1a1a1a; color: #e0e0e0; border: 1px solid #555; padding: 4px 8px; border-radius: 4px;">
+        <option value="">Loading projects...</option>
+      </select>
     </div>
     <div class="template-view">
       <div id="messages"></div>
@@ -323,6 +349,57 @@
       }
     });
 
+    async function loadProjects() {
+      try {
+        const response = await fetch('/api/projects');
+        const result = await response.json();
+
+        if (result.success) {
+          const selector = document.getElementById('projectSelector');
+          selector.innerHTML = '';
+
+          result.data.forEach(project => {
+            const option = document.createElement('option');
+            option.value = project.dirName;
+            option.textContent = project.displayName;
+            if (project.isCurrent) {
+              option.selected = true;
+            }
+            selector.appendChild(option);
+          });
+
+          selector.addEventListener('change', async (e) => {
+            if (e.target.value) {
+              await switchProject(e.target.value);
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error loading projects:', error);
+      }
+    }
+
+    async function switchProject(dirName) {
+      try {
+        const response = await fetch('/api/switch-project', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dirName })
+        });
+        const result = await response.json();
+
+        if (result.success) {
+          // Reload everything
+          await loadTemplate();
+          await loadPersona();
+          showMessage('Switched to project: ' + dirName, 'success');
+        }
+      } catch (error) {
+        console.error('Error switching project:', error);
+        showMessage('Failed to switch project', 'error');
+      }
+    }
+
     async function loadManifest() {
       try {
         const response = await fetch('/api/manifest?nocache=' + Date.now());
@@ -330,6 +407,8 @@
 
         if (result.success) {
           manifest = result.data;
+          console.log('Manifest loaded:', manifest);
+          console.log('Manifest keys:', Object.keys(manifest));
           renderSections();
         } else {
           showError('Failed to load manifest: ' + result.error);
@@ -380,11 +459,79 @@
       }
     }
 
+    // Recursive function to build tree nodes
+    function buildTreeNode(data, path = [], sectionName = '') {
+      const div = document.createElement('div');
+      div.className = 'tree-item';
+
+      // If it has children or files, make it expandable
+      if ((data.children && Object.keys(data.children).length > 0) || (data.files && data.files.length > 0)) {
+        const header = document.createElement('div');
+        header.className = 'tree-header';
+        header.innerHTML = `
+          <span class="tree-icon">▶</span>
+          <span>📁 ${path[path.length - 1] || sectionName}</span>
+        `;
+        header.onclick = (e) => {
+          e.stopPropagation();
+          div.classList.toggle('expanded');
+        };
+        div.appendChild(header);
+
+        const childrenDiv = document.createElement('div');
+        childrenDiv.className = 'tree-children';
+
+        // Add files
+        if (data.files && data.files.length > 0) {
+          data.files.forEach(file => {
+            const fileDiv = document.createElement('div');
+            fileDiv.className = 'tree-file';
+
+            // Fix for subdirectory handling:
+            // Only pass first level as subsection, rest goes in partial
+            let subsectionParam = null;
+            let partialParam = file;
+
+            if (path.length > 0) {
+              subsectionParam = path[0]; // First dir is subsection (e.g. "4_attire")
+
+              if (path.length > 1) {
+                // Deeper paths become part of partial (e.g. "casual/filename")
+                const deeperPath = path.slice(1).join('/');
+                partialParam = deeperPath + '/' + file;
+              }
+            }
+
+            fileDiv.innerHTML = `
+              <span>📄 ${file}</span>
+              <button class="btn btn-success btn-sm" onclick="addPersona('${sectionName}', ${subsectionParam ? "'" + subsectionParam + "'" : 'null'}, '${partialParam}')">Add</button>
+            `;
+            childrenDiv.appendChild(fileDiv);
+          });
+        }
+
+        // Add child directories
+        if (data.children) {
+          Object.entries(data.children).forEach(([childName, childData]) => {
+            const childNode = buildTreeNode(childData, [...path, childName], sectionName);
+            childrenDiv.appendChild(childNode);
+          });
+        }
+
+        div.appendChild(childrenDiv);
+      }
+
+      return div;
+    }
+
     function renderSections() {
       const container = document.getElementById('sectionList');
+      console.log('renderSections called with manifest:', manifest);
+      console.log('Container element:', container);
       container.innerHTML = '';
 
       Object.entries(manifest).forEach(([name, section]) => {
+        console.log('Processing section:', name, section);
         const sectionDiv = document.createElement('div');
         sectionDiv.className = 'section';
 
@@ -398,62 +545,35 @@
           <span>${name}</span>
           <span class="section-type ${section.type}">${typeLabel}</span>
         `;
-        headerDiv.onclick = () => sectionDiv.classList.toggle('expanded');
+        // Remove onclick - tree view handles its own expansion
 
         const filesDiv = document.createElement('div');
         filesDiv.className = 'files-list';
 
-        // Add direct files
-        section.files.forEach(file => {
-          const fileDiv = document.createElement('div');
-          fileDiv.className = 'file-item';
-          fileDiv.innerHTML = `
-            <span>📄 ${file}</span>
-            <button class="btn btn-success btn-sm" onclick="addPersona('${name}', null, '${file}')">Add</button>
-          `;
-          filesDiv.appendChild(fileDiv);
-        });
+        // Use the new tree structure if available
+        if (section.tree) {
+          // Build the tree content directly inside filesDiv
+          // Add files at the root level
+          if (section.tree.files && section.tree.files.length > 0) {
+            section.tree.files.forEach(file => {
+              const fileDiv = document.createElement('div');
+              fileDiv.className = 'tree-file';
+              fileDiv.innerHTML = `
+                <span>📄 ${file}</span>
+                <button class="btn btn-success btn-sm" onclick="addPersona('${name}', null, '${file}')">Add</button>
+              `;
+              filesDiv.appendChild(fileDiv);
+            });
+          }
 
-        // Add subsections
-        Object.entries(section.subsections || {}).forEach(([subName, subsection]) => {
-          const subDiv = document.createElement('div');
-          subDiv.className = 'subsection-item';
-
-          const subHeader = document.createElement('div');
-          subHeader.style.display = 'flex';
-          subHeader.style.justifyContent = 'space-between';
-          subHeader.style.alignItems = 'center';
-          subHeader.style.width = '100%';
-
-          // Fix label for subsection slots vs lists
-          const subTypeLabel = subsection.type === 'slot' ? 'SLOT' : subsection.type === 'list' ? 'LIST' : subsection.type.toUpperCase();
-
-          subHeader.innerHTML = `
-            <span>📁 ${subName}</span>
-            <span class="section-type ${subsection.type}">${subTypeLabel}</span>
-          `;
-          subHeader.onclick = (e) => {
-            e.stopPropagation();
-            subDiv.classList.toggle('expanded');
-          };
-
-          const subFilesDiv = document.createElement('div');
-          subFilesDiv.className = 'subsection-files';
-
-          subsection.files.forEach(file => {
-            const fileDiv = document.createElement('div');
-            fileDiv.className = 'file-item';
-            fileDiv.innerHTML = `
-              <span>📄 ${file}</span>
-              <button class="btn btn-success btn-sm" onclick="addPersona('${name}', '${subName}', '${file}')">Add</button>
-            `;
-            subFilesDiv.appendChild(fileDiv);
-          });
-
-          subDiv.appendChild(subHeader);
-          subDiv.appendChild(subFilesDiv);
-          filesDiv.appendChild(subDiv);
-        });
+          // Add child directories as expandable tree nodes
+          if (section.tree.children) {
+            Object.entries(section.tree.children).forEach(([childName, childData]) => {
+              const childNode = buildTreeNode(childData, [childName], name);
+              filesDiv.appendChild(childNode);
+            });
+          }
+        }
 
         sectionDiv.appendChild(headerDiv);
         sectionDiv.appendChild(filesDiv);
@@ -559,6 +679,7 @@
 
     // Initialize - START KEEPALIVE FIRST!
     startKeepAlive();
+    loadProjects();
     loadManifest();
     loadTemplate();
   </script>

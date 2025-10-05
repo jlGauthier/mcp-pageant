@@ -1,0 +1,8 @@
+Professional persona configuration:
+- 'tech' sections define technical guidelines
+- 'pattern' sections establish behavioral standards
+- 'output' sections configure communication style
+- 'look' sections define appearance for image generation (body, hair, attire, style, place)
+- 'user' sections set user context
+
+Use `inspect` to see your current template composition and understand SLOT vs LIST behavior.

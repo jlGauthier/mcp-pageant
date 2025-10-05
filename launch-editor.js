@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { WebEditor } from './src/WebEditor.js';
 import { PersonaManager } from './src/PersonaManager.js';
 import path from 'path';
