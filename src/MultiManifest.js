@@ -376,7 +376,7 @@ export class MultiManifest {
    * Resolve a manifest-relative path to an absolute path
    * Handles various path formats:
    * - ./manifest/001_main/muse.md
-   * - ./../mcp_persona/manifest/001_main/muse.md
+   * - ./../pageant_extension/manifest/001_main/muse.md
    * - 001_main/muse.md (manifest-relative)
    * Returns null if file not found in any manifest
    */
@@ -419,5 +419,162 @@ export class MultiManifest {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Parse a reference path to extract components
+   * Handles formats like:
+   * - @./manifest/001_main/file.md
+   * - @./../pageant_extension/manifest/050_story/file.md
+   * Returns: { section, subsection, filename, manifestRelative }
+   */
+  parsePath(refPath) {
+    // Remove @ prefix if present
+    const cleanPath = refPath.startsWith('@') ? refPath.substring(1) : refPath;
+
+    // Extract the manifest-relative part (everything after /manifest/)
+    const manifestMatch = cleanPath.match(/\/manifest\/(.+)$/);
+    if (!manifestMatch) {
+      return null;
+    }
+
+    const manifestRelative = manifestMatch[1];
+    const parts = manifestRelative.split('/');
+
+    if (parts.length < 2) {
+      return null; // Need at least section/file
+    }
+
+    const section = parts[0];
+    let subsection = null;
+    let filename = null;
+
+    // Check if there's a subsection (middle parts that are directories)
+    if (parts.length === 2) {
+      // section/file.md
+      filename = parts[1].replace('.md', '');
+    } else {
+      // section/subsection/file.md or deeper
+      // Everything between section and last part is subsection path
+      subsection = parts.slice(1, -1).join('/');
+      filename = parts[parts.length - 1].replace('.md', '');
+    }
+
+    return {
+      section,
+      subsection,
+      filename,
+      manifestRelative,
+      originalPath: refPath
+    };
+  }
+
+  /**
+   * Validate and clean a reference path
+   * Fixes common issues like duplicate /manifest/ patterns
+   * Returns: { valid, cleanedPath, warnings }
+   */
+  validatePath(refPath) {
+    const warnings = [];
+    let cleanedPath = refPath;
+
+    // Check for duplicate /manifest/ occurrences
+    const manifestCount = (refPath.match(/\/manifest\//g) || []).length;
+    if (manifestCount > 1) {
+      // Fix: Keep only first occurrence and last part
+      const parts = refPath.split('/manifest/');
+      cleanedPath = parts[0] + '/manifest/' + parts[parts.length - 1];
+      warnings.push(`Fixed duplicate /manifest/ pattern: ${refPath} -> ${cleanedPath}`);
+    }
+
+    // Check if path is parseable
+    const parsed = this.parsePath(cleanedPath);
+    const valid = parsed !== null;
+
+    return {
+      valid,
+      cleanedPath,
+      warnings,
+      parsed
+    };
+  }
+
+  /**
+   * Extract all dependencies from a file
+   * Reads the file and returns all @ references as absolute paths
+   * Recursively processes dependencies (with cycle detection)
+   */
+  async extractDependencies(filePath, processed = new Set()) {
+    const dependencies = [];
+
+    // Avoid circular dependencies
+    if (processed.has(filePath)) {
+      return dependencies;
+    }
+    processed.add(filePath);
+
+    try {
+      const content = await fs.readFile(filePath, 'utf8');
+      const lines = content.split('\n');
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+
+        // Stop at first header (dependencies must be at top)
+        if (trimmed.startsWith('#')) {
+          break;
+        }
+
+        if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+          const isOverride = trimmed.startsWith('@@');
+          const depPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+
+          // Resolve to absolute path
+          let absolutePath = null;
+
+          // Check if it's a manifest-relative path
+          if (depPath.includes('/manifest/')) {
+            absolutePath = await this.resolveManifestPath(depPath);
+          } else {
+            // Relative to current file
+            const fileDir = path.dirname(filePath);
+            absolutePath = path.resolve(fileDir, depPath);
+          }
+
+          if (absolutePath && await this.fileExists(absolutePath)) {
+            dependencies.push({
+              originalRef: trimmed,
+              absolutePath,
+              relativePath: depPath,
+              isOverride: isOverride
+            });
+
+            // Recursively process this dependency
+            const nestedDeps = await this.extractDependencies(absolutePath, processed);
+            dependencies.push(...nestedDeps);
+          }
+        }
+      }
+    } catch (error) {
+      // File read error - return what we have
+    }
+
+    return dependencies;
+  }
+
+  /**
+   * Resolve a full @ reference line to absolute path
+   * Combines validation, parsing, and resolution
+   */
+  async resolveReference(refLine) {
+    // Validate and clean the path
+    const validation = this.validatePath(refLine);
+
+    if (!validation.valid) {
+      return null;
+    }
+
+    // Use the cleaned path for resolution
+    return await this.resolveManifestPath(validation.cleanedPath);
   }
 }

@@ -117,23 +117,42 @@ The `/manifest` directory contains persona components organized by type:
 └── 999_end/            # Final overrides
 ```
 
-### Directory Naming Convention
+### Slot Key System
 
-- `XXX_name` - **SLOT**: Only one file can be active (underscore)
-- `XXX-name` - **LIST**: Multiple files accumulate (dash)
-- Number prefix determines compilation order
+**Everything is a slot.** Path depth determines slot granularity via numbered components.
+
+**How Slot Keys Work:**
+- Slot key = all numbered path components joined with dots
+- `001_main/engineer.md` → slot key: `001`
+- `010_tech/15_mcp_author.md` → slot key: `010.15`
+- `040_output/01_dialect/technical.md` → slot key: `040.01`
+
+**Slot Collision:**
+- Only ONE file can occupy each slot key
+- Adding a file to an occupied slot replaces the existing file
+- Files with different slot keys coexist independently
+
+**Directory Naming:**
+- Numbered directories create slot components (e.g., `001_main`, `010_tech`)
+- Numbered files create unique slot keys (e.g., `15_mcp.md` → slot `010.15`)
+- Non-numbered subdirectories are organizational only (don't affect slot keys)
 
 ## MCP Tools Reference
 
 These tools are available in Claude Desktop after MCP Pageant is configured:
 
 ### `add` - Add Persona Components
-Adds a persona component to your current configuration. Components stack based on their type (SLOT vs LIST).
+Adds a persona component to your current template. If the file occupies a slot key that's already in use, it replaces the existing file in that slot.
 
 **Parameters:**
 - `section` (required): Target section like 'main', 'tech', 'jobs', 'output' (supports fuzzy matching)
 - `subsection` (optional): Subsection like 'tone', 'dialect', 'narration' (supports fuzzy matching)
 - `partial` (required): Filename pattern or 'random' for random selection
+
+**Slot Behavior:**
+- Determines slot key from file's numbered path components
+- Replaces any existing file with the same slot key
+- Files with different slot keys coexist
 
 **Fuzzy Matching:**
 - Section and subsection names don't need to be exact
@@ -142,16 +161,16 @@ Adds a persona component to your current configuration. Components stack based o
 
 **Examples:**
 ```javascript
-// Add a main persona (replaces current)
+// Add a main persona (typically slot 001)
 add section:main partial:agent
 
 // Fuzzy matching works too
 add section:tech partial:postgres  // Finds 'postgresql'
 add section:out subsection:ton partial:indep  // Finds 'output/tone/independent'
 
-// Add technical knowledge (accumulates)
-add section:tech partial:postgresql
-add section:tech partial:docker
+// Add technical knowledge with unique slot keys
+add section:tech partial:postgresql  // e.g., slot 010.26
+add section:tech partial:docker      // e.g., slot 010.08 - coexists
 
 // Add communication style
 add section:output subsection:tone partial:independent
@@ -161,31 +180,40 @@ add section:tech partial:random
 ```
 
 ### `remove` - Remove Persona Components
-Removes components from the configuration. Can remove entire sections or specific files.
+Removes components from your template by slot key or pattern.
 
 **Parameters:**
 - `section` (required): Section to remove from
 - `subsection` (optional): Specific subsection
 - `partial` (optional): Specific file pattern
 
+**Behavior:**
+- With `partial`: Removes specific file matching the pattern
+- Without `partial`: Removes all files in the specified section/subsection
+
 **Examples:**
 ```javascript
-// Remove a specific tech component
+// Remove a specific file by slot key
 remove section:tech partial:postgresql
 
-// Remove all tech components
+// Remove all files in a section
 remove section:tech
 
-// Remove a subsection
+// Remove all files in a subsection
 remove section:output subsection:tone
 ```
 
 ### `list` - Browse Available Components
-Shows all available persona components you can add.
+Shows all available persona components from your configured manifest directories.
 
 **Parameters:**
 - `section` (optional): Filter by section
 - `subsection` (optional): Filter by subsection
+
+**Output:**
+- Shows file paths with their numbered components
+- Groups by section and subsection
+- Displays all configured manifest directories
 
 **Examples:**
 ```javascript
@@ -251,7 +279,7 @@ Create new persona components directly without manually editing files.
 
 **Parameters:**
 - `section` (required): Target section for the new component
-- `subsection` (optional): Subsection for organization (required for output and look sections)
+- `subsection` (optional): Subsection for organization (required for output sections)
 - `filename` (required): Name of the file to create (include .md extension)
 - `secondperson_prompt_from_system_to_assistant` (required): Content in second person ("You are...", "You must...")
 

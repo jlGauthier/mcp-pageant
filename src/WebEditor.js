@@ -175,12 +175,13 @@ export class WebEditor {
           return res.json({ success: false, error: 'Project directory name required' });
         }
 
-        // Update the manager's current project directory
-        // This is a bit hacky but works for the web editor
-        const originalGetProjectDirName = this.manager.getProjectDirName.bind(this.manager);
-        this.manager.getProjectDirName = () => dirName;
+        // Set override property so all path methods use the new project
+        this.manager.overrideProjectDirName = dirName;
 
-        // Reload template and persona for the new project
+        // Reload variables for the new project
+        await this.manager.loadVariables();
+
+        // Get new paths (will now use overridden project name)
         const templatePath = this.manager.getTemplatePath();
         const personaPath = this.manager.getPersonaPath();
 
@@ -243,13 +244,13 @@ export class WebEditor {
         for (const sectionInfo of allSections) {
           const sectionName = sectionInfo.name;
 
-          // Determine type - sections ending in _list are lists, numbered are slots
-          const isList = sectionName.endsWith('_list') || sectionName.includes('list');
-          const hasNumberPrefix = true; // Most sections have number prefixes
+          // All sections are slots now - path depth determines granularity
+          // Type is just informational for the UI
+          const hasNumberPrefix = /^\d+[_-]/.test(sectionName);
 
           sections[sectionName] = {
-            dir: sectionName, // Use section name for compatibility
-            type: isList ? 'list' : hasNumberPrefix ? 'slot' : 'dir',
+            dir: sectionName,
+            type: hasNumberPrefix ? 'slot' : 'dir',
             tree: { files: [], children: {} }
           };
 

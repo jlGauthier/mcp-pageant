@@ -1,5 +1,5 @@
-@./manifest/020_pattern_list/clean_code.md
-@./manifest/040_output/02_narration/tactile_digital_world.md
+@./manifest/020_pattern/01_clean_code.md
+@./manifest/040_output/02_narration/human_metaphors.md
 @./manifest/999_end/identity_commitment.md
 
 ## Core Identity

@@ -33,6 +33,9 @@ export class PersonaManager extends PersonaCore {
 
     this.variables = {};
     this.variablesLoaded = this.loadVariables();
+
+    // Override for web editor project switching
+    this.overrideProjectDirName = null;
   }
   async loadVariables() {
     this.variables = {};
@@ -89,6 +92,11 @@ export class PersonaManager extends PersonaCore {
     return result;
   }
   getProjectDirName() {
+    // Check for web editor override first
+    if (this.overrideProjectDirName) {
+      return this.overrideProjectDirName;
+    }
+
     const projectPath = process.cwd();
     const pathParts = projectPath.replace(/^[A-Z]:/, (match) => match[0])
       .split(/[\\\/]/)
@@ -125,39 +133,32 @@ export class PersonaManager extends PersonaCore {
     const result = await this.multiManifest.readFile(section, subsection, partial);
     return result ? result.content : null;
   }
-  parseReference(line) {
-    const match = line.match(/@\.\/manifest\/([^\/]+)(?:\/([^\/]+))?(?:\/(.+))?/);
-    if (!match) return null;
-    
-    const [, sectionDir, subsectionDir, filePath] = match;
-    
-    const sectionNumber = parseInt(sectionDir.split('-')[0]) || 0;
-    
-    let subsectionNumber = 0;
-    if (subsectionDir) {
-      const parts = subsectionDir.split('_');
-      if (parts.length > 0 && /^\d+$/.test(parts[0])) {
-        subsectionNumber = parseInt(parts[0]);
+  // Extract slot key from a reference path
+  // Slot key = all numbered path components joined with dots
+  // Examples:
+  //   001_main/engineer.md                    -> "001"
+  //   040_output/01_dialect/technical.md      -> "040.01"
+  //   030_jobs/01_backend/05_database.md      -> "030.01.05"
+  // Override syntax (@@) appends .override:
+  //   @@./manifest/040_output/02_narration/casual.md -> "040.02.override"
+  getSlotKey(refPath, isOverride = false) {
+    const parts = refPath.split('/');
+    const numberedParts = [];
+
+    for (const part of parts) {
+      // Match directories/files that start with numbers
+      const match = part.match(/^(\d+)[_-]/);
+      if (match) {
+        numberedParts.push(match[1]);
       }
     }
-    
-    return {
-      line,
-      sectionDir,
-      sectionNumber,
-      subsectionDir,
-      subsectionNumber,
-      filePath
-    };
-  }
-  isListDirectory(dirName) {
-    // LIST directories end with _list
-    return dirName.endsWith('_list');
-  }
 
-  isSlotDirectory(dirName) {
-    // SLOT directories start with numbers and don't end with _list
-    return /^\d{3}_/.test(dirName) && !dirName.endsWith('_list');
+    if (numberedParts.length === 0) {
+      return null;
+    }
+
+    const baseKey = numberedParts.join('.');
+    return isOverride ? `${baseKey}.override` : baseKey;
   }
 
   async cleanAndSortTemplate(templatePath) {
@@ -173,73 +174,76 @@ export class PersonaManager extends PersonaCore {
     const references = [];
     const nonRefs = [];
 
-    // Extract all @ references and fix malformed paths
+    // Extract all @ and @@ references and inline overrides
     for (const line of lines) {
-      if (line.trim().startsWith('@')) {
-        let fullPath = line.trim().substring(1);
+      const trimmed = line.trim();
 
-        // Fix malformed paths with duplicate /manifest/ patterns
-        // e.g., "./../mcp_persona/manifest/050_story/turned_hot/manifest/060_play_list/..."
-        // should be "./../mcp_persona/manifest/060_play_list/..."
-        if (fullPath.includes('/manifest/') && fullPath.split('/manifest/').length > 2) {
-          // Find all occurrences of /manifest/
-          const parts = fullPath.split('/manifest/');
-          // Keep only the first occurrence and the last part
-          fullPath = parts[0] + '/manifest/' + parts[parts.length - 1];
-          console.warn(`Fixed malformed path: ${line.trim()} -> @${fullPath}`);
+      // Check for inline text override
+      const inlineOverride = this.parseInlineOverride(trimmed);
+      if (inlineOverride) {
+        references.push({
+          slotKey: inlineOverride.slotKey,
+          line: trimmed,
+          isInline: true
+        });
+        continue;
+      }
+
+      if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+        const isOverride = trimmed.startsWith('@@');
+        const refToValidate = isOverride ? '@' + trimmed.substring(2) : trimmed;
+
+        const validation = this.multiManifest.validatePath(refToValidate);
+
+        // Log any warnings
+        if (validation.warnings.length > 0) {
+          validation.warnings.forEach(w => console.warn(w));
         }
 
-        // Extract the manifest-relative part (everything after /manifest/)
-        const manifestIdx = fullPath.lastIndexOf('/manifest/');
-        const manifestRelative = manifestIdx >= 0
-          ? fullPath.substring(manifestIdx + 10) // Skip "/manifest/"
-          : fullPath;
-
-        references.push({
-          manifestRelative,
-          fullPath,
-          line: `@${fullPath}` // Use the cleaned path
-        });
+        if (validation.valid && validation.parsed) {
+          const fullPath = validation.cleanedPath.substring(1); // Remove @
+          references.push({
+            manifestRelative: validation.parsed.manifestRelative,
+            fullPath: fullPath,
+            line: isOverride ? '@' + validation.cleanedPath : validation.cleanedPath, // Use cleaned path with proper prefix
+            isOverride: isOverride
+          });
+        }
       } else {
         nonRefs.push(line);
       }
     }
 
-    // Sort by manifest relative path
-    references.sort((a, b) => a.manifestRelative.localeCompare(b.manifestRelative));
+    // Sort by slot key for predictable ordering
+    references.sort((a, b) => {
+      // For inline overrides, use stored slot key; for files, compute from path
+      const slotA = a.isInline ? a.slotKey : (this.getSlotKey(a.fullPath, a.isOverride) || '');
+      const slotB = b.isInline ? b.slotKey : (this.getSlotKey(b.fullPath, b.isOverride) || '');
+
+      // Compare slot keys (e.g., "001" < "010" < "010.01" < "040" < "040.override")
+      if (slotA && slotB) {
+        return slotA.localeCompare(slotB, undefined, { numeric: true });
+      }
+
+      // Files without slot keys sort by path (inline overrides always have slots)
+      if (!a.isInline && !b.isInline) {
+        return a.manifestRelative.localeCompare(b.manifestRelative);
+      }
+
+      return 0;
+    });
 
     // Process sorted refs, dropping slot collisions
     const finalRefs = [];
     const occupiedSlots = new Set();
 
     for (const ref of references) {
-      // Find the last numbered directory to determine slot
-      const parts = ref.manifestRelative.split('/');
-      let slotKey = null;
-
-      for (let i = 0; i < parts.length - 1; i++) {
-        if (/^\d{3}_/.test(parts[i])) {
-          // This is a numbered directory
-          if (parts[i].endsWith('_list')) {
-            // It's a list - no slot collision possible
-            slotKey = null;
-            break;
-          } else {
-            // It's a slot section
-            // Check if next part is also a numbered subsection
-            if (i + 1 < parts.length - 1 && /^\d+[_-]/.test(parts[i + 1])) {
-              // Include the subsection in the slot key
-              slotKey = parts.slice(0, i + 2).join('/');
-            } else {
-              // Just the section itself is the slot
-              slotKey = parts.slice(0, i + 1).join('/');
-            }
-          }
-        }
-      }
+      const slotKey = ref.isInline ? ref.slotKey : this.getSlotKey(ref.fullPath, ref.isOverride);
 
       if (slotKey && occupiedSlots.has(slotKey)) {
-        // Slot collision - skip this ref
+        // Slot collision - skip this ref (already have something in this slot)
+        const identifier = ref.isInline ? ref.line : ref.fullPath;
+        console.warn(`Slot collision: ${slotKey} already occupied, skipping ${identifier}`);
         continue;
       }
 
@@ -262,6 +266,127 @@ export class PersonaManager extends PersonaCore {
       .join(' ');
   }
 
+  formatWithContext(fileDataList) {
+    let lastSlot = '';
+    let output = '';
+
+    for (let i = 0; i < fileDataList.length; i++) {
+      const current = fileDataList[i];
+      const nextSlot = i < fileDataList.length - 1 ? fileDataList[i + 1][0] : null;
+
+      if (i !== 0) output += '\n\n';
+
+      output += this.determineHeader(lastSlot, current, nextSlot);
+      output += this.determineContent(current);
+
+      lastSlot = current[0];
+    }
+
+    return output;
+  }
+
+  determineContent(current) {
+    return current[3]; // Just return the cleaned content
+  }
+
+  determineHeader(lastSlot, current, nextSlot) {
+    const slot = current[0];
+    const fullPath = current[1];
+    const filename = current[2];
+    const content = current[3];
+
+    const depth = slot ? slot.split('.').length : 0;
+
+    // Check if this is a virtual path (inline override) or in a numbered slot directory
+    const isVirtualPath = !fullPath.includes('manifest') && fullPath.includes('/');
+    const pathHasNumberedDir = /\/\d+[_-]/.test(fullPath); // Check if path contains numbered directory
+    const fileIsNumbered = /^\d+[_-]/.test(path.basename(fullPath));
+
+    // For virtual paths and files in numbered directories, get clean name and prepend slot name
+    let headerName;
+    if (isVirtualPath || pathHasNumberedDir) {
+      const cleanFilename = fileIsNumbered ? filename.replace(/^\d+[_-]/, '') : filename;
+      const slotName = this.getSlotName(fullPath);
+      if (slotName) {
+        headerName = `${slotName}: ${this.toTitleCase(cleanFilename)}`;
+      } else {
+        headerName = this.toTitleCase(cleanFilename);
+      }
+    } else {
+      // Non-slot files just use filename
+      headerName = this.toTitleCase(filename);
+    }
+
+    // Check if section is changing
+    if (this.sectionChange(lastSlot, slot)) {
+      const sectionName = this.getSectionName(fullPath);
+
+      // Check if we're the only file in this section
+      if (this.sectionChange(slot, nextSlot)) {
+        // We're the only content for this section - combine section + header
+        return `# ${sectionName}: ${headerName}\n`;
+      }
+
+      if (depth !== 1) {
+        // We're in depth 2+ (subsection) with more files coming
+        return `# ${sectionName}\n\n## ${headerName}\n`;
+      } else {
+        // Depth 1 - top level section with more files coming
+        return `# ${sectionName}\n\n## ${headerName}\n`;
+      }
+    }
+
+    // No section change - just add subsection header
+    return `## ${headerName}\n`;
+  }
+
+  getSlotName(fullPath) {
+    // Extract the numbered directory name from path
+    // e.g., "manifest/040_output/01_dialect/file.md" -> "Dialect"
+    // For virtual paths: "output/tone/name" -> "Tone"
+    const pathParts = fullPath.split('/');
+    const manifestIdx = pathParts.indexOf('manifest');
+
+    if (manifestIdx >= 0 && manifestIdx + 2 < pathParts.length) {
+      const subsectionDir = pathParts[manifestIdx + 2];
+      if (/^\d+[_-]/.test(subsectionDir)) {
+        return this.toTitleCase(subsectionDir.replace(/^\d+[_-]/, ''));
+      }
+    }
+
+    // Handle virtual paths (e.g., output/tone/name -> Tone)
+    if (pathParts.length >= 2 && !fullPath.includes('manifest')) {
+      const subsection = pathParts[pathParts.length - 2];
+      return this.toTitleCase(subsection);
+    }
+
+    return null;
+  }
+
+  getSectionName(fullPath) {
+    // Extract section name from path
+    // e.g., "./manifest/001_main/file.md" -> "Main"
+    const pathParts = fullPath.split('/');
+    const manifestIdx = pathParts.indexOf('manifest');
+
+    if (manifestIdx >= 0 && manifestIdx + 1 < pathParts.length) {
+      const sectionDir = pathParts[manifestIdx + 1];
+      return this.toTitleCase(sectionDir.replace(/^\d{3}[_-]/, ''));
+    }
+
+    return 'Unknown';
+  }
+
+  sectionChange(slotA, slotB) {
+    if (!slotA || !slotB) return true;
+
+    // Compare first component of slot keys
+    const partsA = slotA.split('.');
+    const partsB = slotB.split('.');
+
+    return partsA[0] !== partsB[0];
+  }
+
   formatCompiledContent(content) {
     const lines = content.split('\n');
     const formatted = [];
@@ -279,7 +404,7 @@ export class PersonaManager extends PersonaCore {
 
         // Handle section headers that were added during compilation
         // Only treat as main section if it matches known section patterns
-        const knownSections = ['Main', 'Pattern List', 'Output', 'Story', 'Play List', 'Look', 'User', 'Jail', 'End'];
+        const knownSections = ['Main', 'Pattern List', 'Output', 'User', 'End'];
         const isMainSection = level === 1 && knownSections.includes(title);
 
         if (isMainSection) {
@@ -301,10 +426,7 @@ export class PersonaManager extends PersonaCore {
           if (formatted.length > 0 && !lastLineWasBlank) {
             formatted.push('');
           }
-          // But DON'T treat story subsections like "Learning From The Hub" as affecting hierarchy
-          if (currentMainSection !== 'Story') {
-            currentSubSection = title;
-          }
+          currentSubSection = title;
           formatted.push(`## ${title}`);
           lastLineWasBlank = false;
         } else {
@@ -365,13 +487,9 @@ export class PersonaManager extends PersonaCore {
         }
 
         // Special handling for misplaced headers
-        // Don't add subsection headers that don't belong to current section
-        if (level === 2 && currentMainSection) {
-          // Check if this ## belongs under the current #
-          const belongsHere = ['Narration', 'Body'].includes(title);
-          if (!belongsHere && currentMainSection === 'Pattern List' && title === 'Narration') {
-            continue; // Skip ## Narration under Pattern List
-          }
+        // Skip ## Narration if it appears under wrong section
+        if (level === 2 && currentMainSection === 'Pattern List' && title === 'Narration') {
+          continue; // Skip ## Narration under Pattern List
         }
 
         previousHeader = { level, title };
@@ -385,10 +503,157 @@ export class PersonaManager extends PersonaCore {
     return finalFormatted.join('\n');
   }
 
-  async compilePersona(projectPath) {
-    // Ensure variables are loaded before compiling
+  // Parse inline text override
+  // Format: SLOT_KEY - virtual/path/name: content text here
+  // Example: 040.01 - output/dialect/friendly: Warm conversational tone
+  parseInlineOverride(line) {
+    const match = line.match(/^(\d+(?:\.\d+)*)\s*-\s*([^:]+):\s*(.+)$/);
+    if (!match) return null;
+
+    return {
+      slotKey: match[1],
+      virtualPath: match[2].trim(),
+      content: match[3].trim()
+    };
+  }
+
+  // Pure compilation: takes template content, returns formatted persona
+  async compileFromTemplate(templateContent) {
+    // Ensure variables are loaded
     await this.variablesLoaded;
 
+    const lines = templateContent.split('\n');
+
+    // Build a map of all references: slot key -> { path, isOverride, inline }
+    const refMap = new Map();
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Check for inline text override first
+      const inlineOverride = this.parseInlineOverride(trimmed);
+      if (inlineOverride) {
+        refMap.set(inlineOverride.slotKey, {
+          inline: true,
+          virtualPath: inlineOverride.virtualPath,
+          content: inlineOverride.content
+        });
+        continue;
+      }
+
+      if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+        const isOverride = trimmed.startsWith('@@');
+        const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+
+        if (!refPath.endsWith('/')) {
+          const slotKey = this.getSlotKey(refPath, isOverride);
+          if (slotKey) {
+            refMap.set(slotKey, { path: refPath, isOverride });
+          }
+        }
+      }
+    }
+
+    // PHASE 1: Collect all file data [slotKey, fullPath, filename, content]
+    const fileDataList = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#') && !trimmed.startsWith('@')) {
+        continue;
+      }
+
+      // Handle inline text overrides
+      const inlineOverride = this.parseInlineOverride(trimmed);
+      if (inlineOverride) {
+        // Extract filename from virtual path (last component)
+        const pathParts = inlineOverride.virtualPath.split('/');
+        const filename = pathParts[pathParts.length - 1];
+
+        // Add to file data list with virtual path as fullPath
+        fileDataList.push([
+          inlineOverride.slotKey,
+          inlineOverride.virtualPath,
+          filename,
+          inlineOverride.content
+        ]);
+        continue;
+      }
+
+      if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+        const isOverride = trimmed.startsWith('@@');
+        const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+
+        if (refPath.endsWith('/')) {
+          continue;
+        }
+
+        // Check if this is a base file that has an override
+        if (!isOverride) {
+          const baseSlotKey = this.getSlotKey(refPath);
+          const overrideSlotKey = baseSlotKey ? `${baseSlotKey}.override` : null;
+
+          if (overrideSlotKey && refMap.has(overrideSlotKey)) {
+            console.log(`Skipping base file ${refPath} - override exists`);
+            continue;
+          }
+        }
+
+        const filePath = await this.multiManifest.resolveReference(`@${refPath}`);
+        if (!filePath) {
+          console.warn(`File not found: ${refPath}`);
+          continue;
+        }
+
+        try {
+          let content = await fs.readFile(filePath, 'utf8');
+          content = this.substituteVariables(content);
+
+          // Remove dependency lines and the first # header
+          const contentLines = content.split('\n');
+          const cleanLines = [];
+          let skippedFirstHeader = false;
+
+          for (let i = 0; i < contentLines.length; i++) {
+            const cLine = contentLines[i];
+
+            if (cLine.trim().startsWith('@')) {
+              continue;
+            }
+
+            if (!skippedFirstHeader && cLine.match(/^#+\s+/)) {
+              skippedFirstHeader = true;
+              while (i + 1 < contentLines.length && contentLines[i + 1].trim() === '') {
+                i++;
+              }
+              continue;
+            }
+
+            // Demote all remaining headers by one level (add one #)
+            const headerMatch = cLine.match(/^(#+)(\s+.+)$/);
+            if (headerMatch) {
+              cleanLines.push(`#${headerMatch[1]}${headerMatch[2]}`);
+            } else {
+              cleanLines.push(cLine);
+            }
+          }
+
+          const cleanedContent = cleanLines.join('\n').trim();
+          const slotKey = this.getSlotKey(refPath, isOverride);
+          const filename = path.basename(refPath, '.md');
+
+          fileDataList.push([slotKey, refPath, filename, cleanedContent]);
+        } catch (error) {
+          console.error(`ERROR: Could not read required file: ${refPath}`);
+          throw new Error(`Template references missing file: ${refPath}`);
+        }
+      }
+    }
+
+    // PHASE 2: Format with look-ahead context
+    return this.formatWithContext(fileDataList);
+  }
+
+  async compilePersona(projectPath) {
     const templatePath = this.getTemplatePath();
     const personaPath = this.getPersonaPath();
     const claudeLocalPath = path.join(projectPath, 'CLAUDE.local.md');
@@ -408,184 +673,14 @@ export class PersonaManager extends PersonaCore {
     }
 
     try {
-      const lines = template.split('\n');
-      const compiled = [];
-      const seenSections = new Set();
-
-      for (const line of lines) {
-        // Skip any header lines in the template file itself
-        if (line.trim().startsWith('#') && !line.trim().startsWith('@')) {
-          continue;
-        }
-
-        if (line.trim().startsWith('@')) {
-          const refPath = line.trim().substring(1);
-
-          if (refPath.endsWith('/')) {
-            continue;
-          } else {
-            // Try to resolve using MultiManifest first (for manifest-relative paths)
-            let filePath = await this.multiManifest.resolveManifestPath(refPath);
-
-            // If not found in manifests, try resolving relative to baseDir
-            if (!filePath) {
-              filePath = path.resolve(this.baseDir, refPath);
-              // Check if this resolved path exists
-              try {
-                await fs.access(filePath);
-              } catch {
-                console.warn(`File not found: ${refPath}`);
-                continue;
-              }
-            }
-
-            // Validate the path doesn't contain invalid patterns (multiple /manifest/ occurrences)
-            const manifestCount = (refPath.match(/\/manifest\//g) || []).length;
-            if (manifestCount > 1) {
-              console.warn(`Skipping malformed path with duplicate /manifest/: ${refPath}`);
-              continue;
-            }
-
-            try {
-              let content = await fs.readFile(filePath, 'utf8');
-              // Apply variable substitution
-              content = this.substituteVariables(content);
-              
-              // Remove dependency lines and the first main title header only
-              const contentLines = content.split('\n');
-              const cleanLines = [];
-              let skippedFirstHeader = false;
-
-              // Process lines
-              for (let i = 0; i < contentLines.length; i++) {
-                const cLine = contentLines[i];
-
-                // Skip @ dependencies
-                if (cLine.trim().startsWith('@')) {
-                  continue;
-                }
-
-                // Skip the first # header only (the main title)
-                if (!skippedFirstHeader && cLine.match(/^#\s+/)) {
-                  skippedFirstHeader = true;
-                  // Also skip blank lines immediately after
-                  while (i + 1 < contentLines.length && contentLines[i + 1].trim() === '') {
-                    i++;
-                  }
-                  continue;
-                }
-
-                // Add all other lines
-                cleanLines.push(cLine);
-              }
-
-              content = cleanLines.join('\n').trim();
-
-              // Check if content has no headers and add one based on filename
-              if (content && !content.match(/^#{1,3}\s+/m)) {
-                // For numbered subsections in 070_look, use the subsection name instead of filename
-                const pathParts = refPath.split('/');
-                const manifestIdx = pathParts.indexOf('manifest');
-                let headerName;
-
-                if (manifestIdx >= 0 && manifestIdx + 2 < pathParts.length - 1) {
-                  const sectionDir = pathParts[manifestIdx + 1];
-                  const subsectionDir = pathParts[manifestIdx + 2];
-
-                  // Check if this is a 070_look numbered subsection
-                  if (sectionDir === '070_look' && /^\d+[_-]/.test(subsectionDir)) {
-                    // Use the subsection name (without number) as header
-                    headerName = this.toTitleCase(subsectionDir.replace(/^\d+[_-]/, ''));
-                  }
-                }
-
-                // Fallback to filename if not a special case
-                if (!headerName) {
-                  const filename = path.basename(refPath, '.md');
-                  headerName = this.toTitleCase(filename);
-                }
-
-                content = `## ${headerName}\n${content}`;
-              }
-
-              // Add section headers for organization
-              const pathParts = refPath.split('/');
-
-              // Find the manifest index to properly locate section directory
-              const manifestIdx = pathParts.indexOf('manifest');
-              if (manifestIdx >= 0 && manifestIdx + 1 < pathParts.length) {
-                const sectionDir = pathParts[manifestIdx + 1];
-
-                // Check if this is a numbered section directory
-                if (/^\d{3}_/.test(sectionDir)) {
-                  // Add section header if we haven't seen this section yet
-                  if (!seenSections.has(sectionDir)) {
-                    seenSections.add(sectionDir);
-
-                    // Extract section name from directory (remove numbers and clean up)
-                    let sectionName = '';
-                    if (sectionDir.includes('_')) {
-                      sectionName = sectionDir.split('_').slice(1).join('_');
-                    } else if (sectionDir.includes('-')) {
-                      sectionName = sectionDir.split('-').slice(1).join('-');
-                    } else {
-                      sectionName = sectionDir;
-                    }
-                    // Convert to title case
-                    sectionName = this.toTitleCase(sectionName);
-
-                    // Add section header with newline separator before content
-                    content = compiled.length > 0 ? `\n# ${sectionName}\n${content}` : `# ${sectionName}\n${content}`;
-                  }
-
-                  // Don't add subsection headers for 040_output subdirectories
-                  // or 070_look subdirectories - these files already contain their own headers
-                  const skipSubsectionHeaders = ['040_output', '070_look'];
-
-                  if (!skipSubsectionHeaders.includes(sectionDir) && manifestIdx + 2 < pathParts.length - 1) {
-                    const subsectionDir = pathParts[manifestIdx + 2];
-
-                    // Check if this is a numbered subsection
-                    if (/^\d+[_-]/.test(subsectionDir)) {
-                      const subsectionKey = `${sectionDir}/${subsectionDir}`;
-
-                      if (!seenSections.has(subsectionKey)) {
-                        seenSections.add(subsectionKey);
-
-                        // Extract subsection name and convert to title case
-                        let subsectionName = subsectionDir.replace(/^\d+[_-]/, '');
-                        subsectionName = this.toTitleCase(subsectionName);
-
-                        // Add subsection header
-                        content = `## ${subsectionName}\n${content}`;
-                      }
-                    }
-                  }
-                }
-              }
-              
-              compiled.push(content);
-            } catch (error) {
-              console.error(`ERROR: Could not read required file: ${refPath}`);
-              throw new Error(`Template references missing file: ${refPath}`);
-            }
-          }
-        } else if (line.trim() !== '') {
-          // Add any other non-empty, non-header lines
-          compiled.push(line);
-        }
-      }
-
-      // Format the compiled content using the pure function
-      const formattedContent = formatMarkdown(compiled);
+      const formattedContent = await this.compileFromTemplate(template);
 
       // Write formatted persona to plans directory (for backup/reference)
       await fs.writeFile(personaPath, formattedContent);
 
       // Write the formatted persona directly to CLAUDE.local.md for real-time updates
-      // No more @ import - write the actual content
       await fs.writeFile(claudeLocalPath, formattedContent);
-      
+
       return true;
     } catch (error) {
       console.error('Compilation error:', error);
@@ -692,85 +787,84 @@ export class PersonaManager extends PersonaCore {
     const relativePath = path.relative(this.baseDir, fileInfo.path).replace(/\\/g, '/');
     const newReference = `@./${relativePath}`;
 
-    // Extract dependencies recursively
-    const allDependencies = new Set();
-    const processedFiles = new Set();
+    // Extract dependencies using MultiManifest
+    const deps = await this.multiManifest.extractDependencies(fileInfo.path);
 
-    async function extractDepsRecursive(filePath) {
-      if (processedFiles.has(filePath)) return; // Avoid circular deps
-      processedFiles.add(filePath);
+    // Convert to reference paths relative to base, preserving override flag
+    const allDependencies = [];
+    for (const dep of deps) {
+      const relativePath = path.relative(this.baseDir, dep.absolutePath).replace(/\\/g, '/');
+      allDependencies.push({
+        path: `./${relativePath}`,
+        isOverride: dep.isOverride || false
+      });
+    }
 
-      try {
-        const content = await fs.readFile(filePath, 'utf8');
-        const lines = content.split('\n');
-        const fileDir = path.dirname(filePath);
+    // Check if this is a SLOT directory or subsection
+    // IMPORTANT: We need to remove dependencies from the OLD file before adding new ones
+    // Get slot key for the main file we're adding
+    const mainSlotKey = this.getSlotKey(relativePath);
 
-        for (const line of lines) {
-          if (line.trim().startsWith('@')) {
-            const depPath = line.trim().substring(1);
-            let fullDepPath;
+    // Read template to find existing file in this slot
+    let template = '';
+    try {
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch (error) {
+      // No template exists, nothing to remove
+    }
 
-            // Check if the dependency starts with ./manifest/ - these are root-relative
-            if (depPath.startsWith('./manifest/')) {
-              // Find the manifest root (could be in either manifest directory)
-              const manifestRelativePath = depPath.replace('./manifest/', '');
+    // Check if there's an existing file in this slot that has dependencies we need to remove
+    if (template && mainSlotKey) {
+      const lines = template.split('\n');
+      for (const line of lines) {
+        if (line.trim().startsWith('@')) {
+          const refPath = line.trim().substring(1); // Remove @
+          const refSlotKey = this.getSlotKey(refPath);
 
-              // Try to find the file in any of our manifest directories
-              let found = false;
-              for (const manifestDir of this.manifestDirs) {
-                const candidatePath = path.join(manifestDir, manifestRelativePath);
-                try {
-                  await fs.access(candidatePath);
-                  fullDepPath = candidatePath;
-                  found = true;
-                  break;
-                } catch {
-                  // Try next manifest dir
+          if (refSlotKey === mainSlotKey) {
+            // Found existing file in this slot - remove its dependencies first
+            const absoluteOldPath = path.join(this.baseDir, refPath.replace(/^\.\//, ''));
+
+            try {
+              const oldDeps = await this.multiManifest.extractDependencies(absoluteOldPath);
+
+              // Remove each old dependency's slot (with correct override flag)
+              for (const oldDep of oldDeps) {
+                const oldDepPath = path.relative(this.baseDir, oldDep.absolutePath).replace(/\\/g, '/');
+                const oldDepSlotKey = this.getSlotKey(oldDepPath, oldDep.isOverride || false);
+
+                if (oldDepSlotKey) {
+                  await this.removeSlotByKey(templatePath, oldDepSlotKey);
                 }
               }
-
-              if (!found) {
-                console.warn(`Dependency not found in any manifest: ${depPath}`);
-                continue;
-              }
-            } else {
-              // Regular relative path
-              fullDepPath = path.resolve(fileDir, depPath);
+            } catch (error) {
+              // Old file might not exist anymore, that's ok
+              console.log(`Could not extract dependencies from old file: ${error.message}`);
             }
-
-            // Convert back to a reference path relative to base
-            const relativeDepPath = path.relative(this.baseDir, fullDepPath).replace(/\\/g, '/');
-            allDependencies.add(`./${relativeDepPath}`);
-
-            // Recursively process this dependency
-            await extractDepsRecursive.call(this, fullDepPath);
-          } else if (line.trim().startsWith('#')) {
-            break; // Stop at first header
+            break; // Only one file per slot
           }
         }
-      } catch (error) {
-        console.warn(`Could not read dependency: ${filePath}`);
       }
     }
 
-    // Extract all dependencies recursively
-    await extractDepsRecursive.call(this, fileInfo.path);
-
-    // Check if this is a SLOT directory or subsection
-    // For subsections, we only want to remove from that specific subsection slot
-    // For main sections without subsections, remove the whole section
-    if (matchedSubsection) {
-      // Adding to a subsection - only remove that subsection's slot
-      await this.removeSlotReferencesFromTemplate(templatePath, matchedSection, matchedSubsection);
-    } else if (this.isSlotDirectory(matchedSection)) {
-      // Adding to main section slot - remove whole section
-      await this.removeSlotReferencesFromTemplate(templatePath, matchedSection, null);
+    // Remove existing file in this slot
+    if (mainSlotKey) {
+      await this.removeSlotByKey(templatePath, mainSlotKey);
     }
 
     // Add all dependencies first
+    // For overrides (@@), DON'T remove base files - they should coexist
+    // For base files (@), remove existing base files in same slot
     for (const dep of allDependencies) {
-      const depRef = `@${dep}`;
-      await this.addReferenceToTemplate(templatePath, depRef);
+      const depSlotKey = this.getSlotKey(dep.path, dep.isOverride);
+
+      if (depSlotKey) {
+        // Only remove the exact slot we're adding to (not base when adding override)
+        await this.removeSlotByKey(templatePath, depSlotKey);
+      }
+
+      const prefix = dep.isOverride ? '@@' : '@';
+      await this.addReferenceToTemplate(templatePath, `${prefix}${dep.path}`);
     }
 
     // Then add the main file
@@ -790,7 +884,7 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
-  async removeSlotReferencesFromTemplate(templatePath, section, subsection = null) {
+  async removeSlotByKey(templatePath, slotKey) {
     // Read current template
     let template = '';
     try {
@@ -803,18 +897,24 @@ export class PersonaManager extends PersonaCore {
     const cleanedLines = [];
 
     for (const line of lines) {
-      if (line.trim().startsWith('@')) {
-        // Check if this reference is for the same SLOT
-        const refPath = line.trim();
+      const trimmed = line.trim();
 
-        // Build pattern to match - handles both manifest dirs
-        const slotPattern = subsection
-          ? `/${section}/${subsection}/`
-          : `/${section}/`;
+      // Check for inline text override
+      const inlineOverride = this.parseInlineOverride(trimmed);
+      if (inlineOverride && inlineOverride.slotKey === slotKey) {
+        // Skip this line - it's in the same slot we're replacing
+        console.log(`Removing slot ${slotKey}: ${inlineOverride.virtualPath}`);
+        continue;
+      }
 
-        if (refPath.includes(slotPattern)) {
-          // Skip this line - it's in the same SLOT we're about to fill
-          console.log(`Removing existing SLOT reference: ${refPath}`);
+      if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+        const isOverride = trimmed.startsWith('@@');
+        const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1); // Remove @ or @@
+        const refSlotKey = this.getSlotKey(refPath, isOverride);
+
+        if (refSlotKey === slotKey) {
+          // Skip this line - it's in the same slot we're replacing
+          console.log(`Removing slot ${slotKey}: ${refPath}`);
           continue;
         }
       }
@@ -872,15 +972,25 @@ export class PersonaManager extends PersonaCore {
     let filesToRemove = [];
 
     if (partial) {
-      // Find specific file by partial name in template
+      // Find specific file or inline override by partial name in template
       for (const line of lines) {
-        if (line.trim().startsWith('@') && line.includes(partial)) {
-          filesToRemove.push(line.trim());
+        const trimmed = line.trim();
+
+        // Check inline overrides
+        const inlineOverride = this.parseInlineOverride(trimmed);
+        if (inlineOverride && inlineOverride.virtualPath.includes(partial)) {
+          filesToRemove.push(trimmed);
+          break;
+        }
+
+        // Check file references
+        if ((trimmed.startsWith('@@') || trimmed.startsWith('@')) && trimmed.includes(partial)) {
+          filesToRemove.push(trimmed);
           break;
         }
       }
       if (filesToRemove.length === 0) {
-        throw new Error(`File containing '${partial}' not found in template`);
+        throw new Error(`File or override containing '${partial}' not found in template`);
       }
     } else {
       // Use MultiManifest to verify section exists
@@ -907,11 +1017,12 @@ export class PersonaManager extends PersonaCore {
 
       // Find matching files in template
       for (const line of lines) {
-        if (line.trim().startsWith('@')) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
           // Check if this line matches the section/subsection
-          if (line.includes(`/${matchedSection}/`)) {
-            if (!matchedSubsection || line.includes(`/${matchedSection}/${matchedSubsection}/`)) {
-              filesToRemove.push(line.trim());
+          if (trimmed.includes(`/${matchedSection}/`)) {
+            if (!matchedSubsection || trimmed.includes(`/${matchedSection}/${matchedSubsection}/`)) {
+              filesToRemove.push(trimmed);
             }
           }
         }
@@ -922,36 +1033,56 @@ export class PersonaManager extends PersonaCore {
       }
     }
     
-    // Process each file to remove using inherited method
-    let updatedTemplate = template;
+    // Process each file to remove
     let totalDepsRemoved = 0;
-    
+
     for (const fileRef of filesToRemove) {
-      const filePath = fileRef.replace('@./', path.join(this.baseDir, '/').replace(/\\/g, '/'));
-      const actualPath = filePath.replace(/\//g, path.sep);
-      
-      // Count dependencies before removal for reporting
-      const deps = await this.extractDependencies(actualPath);
-      const listDeps = deps.filter(dep => {
-        const parts = dep.split('/');
-        return parts[2] && parts[2].endsWith('_list');
-      });
-      totalDepsRemoved += listDeps.length;
-      
-      // Use inherited method to remove file and its LIST dependencies
-      updatedTemplate = await this.removeFileFromTemplate(updatedTemplate, fileRef, actualPath);
+      // Check if this is an inline override
+      const inlineOverride = this.parseInlineOverride(fileRef);
+      if (inlineOverride) {
+        // Inline overrides have no dependencies, just remove by slot key
+        await this.removeSlotByKey(templatePath, inlineOverride.slotKey);
+        continue;
+      }
+
+      // Handle file references
+      const isOverride = fileRef.startsWith('@@');
+      const cleanRef = isOverride ? fileRef.substring(2) : fileRef.substring(1);
+      const filePath = cleanRef.replace(/^\.\//, '');
+      const absolutePath = path.join(this.baseDir, filePath);
+
+      // Extract and remove dependencies first (with correct override flag)
+      try {
+        const deps = await this.multiManifest.extractDependencies(absolutePath);
+
+        for (const dep of deps) {
+          const depPath = path.relative(this.baseDir, dep.absolutePath).replace(/\\/g, '/');
+          const depSlotKey = this.getSlotKey(depPath, dep.isOverride || false);
+
+          if (depSlotKey) {
+            await this.removeSlotByKey(templatePath, depSlotKey);
+            totalDepsRemoved++;
+          }
+        }
+      } catch (error) {
+        // File might not exist, that's ok
+        console.log(`Could not extract dependencies: ${error.message}`);
+      }
+
+      // Remove the main file's slot
+      const mainSlotKey = this.getSlotKey(filePath, isOverride);
+      if (mainSlotKey) {
+        await this.removeSlotByKey(templatePath, mainSlotKey);
+      }
     }
-    
-    // Write updated template
-    await fs.writeFile(templatePath, updatedTemplate);
-    
+
     // Compile the persona
     await this.compilePersona(projectPath);
-    
-    const message = partial 
-      ? `Removed ${partial} and ${totalDepsRemoved} LIST dependencies`
-      : `Removed ${subsection ? `${section}/${subsection}` : section} (${filesToRemove.length} files) and ${totalDepsRemoved} LIST dependencies`;
-    
+
+    const message = partial
+      ? `Removed ${partial}` + (totalDepsRemoved > 0 ? ` and ${totalDepsRemoved} dependencies` : '')
+      : `Removed ${subsection ? `${section}/${subsection}` : section} (${filesToRemove.length} files)` + (totalDepsRemoved > 0 ? ` and ${totalDepsRemoved} dependencies` : '');
+
     return {
       content: [
         {
@@ -961,12 +1092,43 @@ export class PersonaManager extends PersonaCore {
       ],
     };
   }
-  async handleCreate({ section, subsection, filename, secondperson_prompt_from_system_to_assistant }) {
-    // Strip _list suffix if present for fuzzy matching
-    if (section && section.endsWith('_list')) {
-      section = section.slice(0, -5); // Remove '_list'
-    }
 
+  async handleTalent({ talent_name, time_minutes = 5 }) {
+    const projectPath = process.cwd();
+
+    // Add the talent from 015_talents section
+    const addResult = await this.handleAdd({
+      section: '015_talents',
+      subsection: null,
+      partial: talent_name
+    });
+
+    // Set up timer to auto-remove
+    const timeoutMs = time_minutes * 60 * 1000;
+    setTimeout(async () => {
+      try {
+        await this.handleRemove({
+          section: '015_talents',
+          subsection: null,
+          partial: talent_name
+        });
+        console.log(`Auto-removed talent: ${talent_name} after ${time_minutes} minutes`);
+      } catch (error) {
+        console.error(`Failed to auto-remove talent ${talent_name}:`, error.message);
+      }
+    }, timeoutMs);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `Talent '${talent_name}' loaded. Will auto-remove in ${time_minutes} minutes.\n\n${addResult.content[0].text}`,
+        },
+      ],
+    };
+  }
+
+  async handleCreate({ section, subsection, filename, secondperson_prompt_from_system_to_assistant }) {
     // Get all available sections using MultiManifest
     const sections = await this.multiManifest.listSections();
     const sectionNames = sections.map(s => s.name);
@@ -1109,6 +1271,8 @@ ${secondperson_prompt_from_system_to_assistant}`;
       totalFiles: 0
     };
 
+    let matchedSubsection = null; // Declare here for use in output formatting
+
     try {
       if (!section) {
         // List all sections
@@ -1170,7 +1334,7 @@ ${secondperson_prompt_from_system_to_assistant}`;
         if (subsection) {
           // List files in specific subsection
           const subsections = await this.multiManifest.listSubsections(matchedSection);
-          const matchedSubsection = this.fuzzyMatch(subsections.map(s => s.name), subsection);
+          matchedSubsection = this.fuzzyMatch(subsections.map(s => s.name), subsection);
 
           if (!matchedSubsection) {
             throw new Error(`Subsection '${subsection}' not found in section '${matchedSection}'`);
@@ -1243,9 +1407,9 @@ ${secondperson_prompt_from_system_to_assistant}`;
         // We always process because when section is specified, result.sections
         // only contains the matched section
         if (true) {
-          if (section && subsection && sectionData.subsections[subsection]) {
-            // Show specific subsection
-            for (const file of sectionData.subsections[subsection].files) {
+          if (section && subsection && sectionData.subsections[matchedSubsection]) {
+            // Show specific subsection - use matchedSubsection not subsection
+            for (const file of sectionData.subsections[matchedSubsection].files) {
               output.push(`  - ${file.replace('.md', '')}`);
             }
           } else if (!subsection) {
@@ -1308,24 +1472,24 @@ ${secondperson_prompt_from_system_to_assistant}`;
       const lines = template.split('\n');
       const references = [];
 
-      // Parse all @ references
+      // Parse all @ and @@ references
       for (const line of lines) {
-        if (line.trim().startsWith('@')) {
-          const refPath = line.trim().substring(1);
+        const trimmed = line.trim();
+        if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+          const isOverride = trimmed.startsWith('@@');
+          const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+          const slotKey = this.getSlotKey(refPath, isOverride);
 
-          // Extract section from path
+          // Extract section from path for grouping
           const manifestMatch = refPath.match(/\/manifest\/([^\/]+)/);
           if (manifestMatch) {
             const sectionDir = manifestMatch[1];
 
-            // Determine if SLOT or LIST
-            const isSlot = /^\d{3}_/.test(sectionDir) && !sectionDir.endsWith('_list');
-            const isList = sectionDir.endsWith('_list');
-
             references.push({
               path: refPath,
               section: sectionDir,
-              type: isSlot ? 'SLOT' : (isList ? 'LIST' : 'UNKNOWN')
+              slotKey: slotKey || 'none',
+              isOverride: isOverride
             });
           }
         }
@@ -1344,14 +1508,15 @@ ${secondperson_prompt_from_system_to_assistant}`;
       const grouped = {};
       for (const ref of references) {
         if (!grouped[ref.section]) {
-          grouped[ref.section] = {
-            type: ref.type,
-            files: []
-          };
+          grouped[ref.section] = [];
         }
         // Extract filename from path
         const filename = path.basename(ref.path, '.md');
-        grouped[ref.section].files.push(filename);
+        grouped[ref.section].push({
+          filename,
+          slotKey: ref.slotKey,
+          isOverride: ref.isOverride
+        });
       }
 
       // Format output
@@ -1360,19 +1525,21 @@ ${secondperson_prompt_from_system_to_assistant}`;
 
       let output = [`Current Template (${projectName}):\n`];
 
-      for (const [section, data] of Object.entries(grouped)) {
+      for (const [section, files] of Object.entries(grouped)) {
         const sectionName = section.replace(/^\d{3}_/, '').replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-        const typeLabel = data.type === 'SLOT' ? ' (SLOT - only one active)' : (data.type === 'LIST' ? ' (LIST - accumulates)' : '');
 
-        output.push(`\n# ${sectionName}${typeLabel}`);
-        for (const file of data.files) {
-          output.push(`  @${file}`);
+        output.push(`\n# ${sectionName}`);
+        for (const file of files) {
+          const prefix = file.isOverride ? '@@' : '@';
+          output.push(`  ${prefix}${file.filename} [slot: ${file.slotKey}]`);
         }
       }
 
       output.push(`\n\nTotal: ${references.length} active references`);
-      output.push(`\nSLOT sections: Only one file can be active at a time (adding removes previous)`);
-      output.push(`LIST sections: Multiple files accumulate (adding keeps existing files)`);
+      output.push(`\nSlot system: Path depth determines slot granularity`);
+      output.push(`  @001_main/file.md               → slot: 001`);
+      output.push(`  @040_output/01_dialect/file.md  → slot: 040.01`);
+      output.push(`  @@030_jobs/02_engineer/file.md  → slot: 030.02.override (overrides slot 030.02)`);
 
       return {
         content: [{
@@ -1388,5 +1555,37 @@ ${secondperson_prompt_from_system_to_assistant}`;
         }]
       };
     }
+  }
+
+  async handleThrift({ slot_key, virtual_path, content }) {
+    const projectPath = process.cwd();
+    const templatePath = this.getTemplatePath();
+    const projectDir = path.dirname(templatePath);
+
+    // Ensure project directory exists
+    await fs.mkdir(projectDir, { recursive: true });
+
+    // Build the inline override line
+    const inlineLine = `${slot_key} - ${virtual_path}: ${content}`;
+
+    // Remove any existing component in this slot
+    await this.removeSlotByKey(templatePath, slot_key);
+
+    // Add the inline override to template
+    await this.addReferenceToTemplate(templatePath, inlineLine);
+
+    // Compile the persona
+    await this.compilePersona(projectPath);
+
+    // Extract name from virtual path for response
+    const pathParts = virtual_path.split('/');
+    const name = pathParts[pathParts.length - 1];
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Added inline override "${name}" to slot ${slot_key} and compiled persona.`
+      }]
+    };
   }
 }

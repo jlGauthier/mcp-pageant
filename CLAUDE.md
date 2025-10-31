@@ -23,7 +23,7 @@ server.js                # MCP server entry point with tool/resource handlers
 
 **Manifest** (Root): Primary persona component library
 - Located at `./manifest` by default
-- Contains organized sections (001_main, 010_tech_list, etc.)
+- Contains organized sections (001_main, 010_tech, 020_pattern, etc.)
 - Configured via `MANIFEST_DIRS` in `.env`
 
 **Extensions**: Additional manifest directories
@@ -42,34 +42,55 @@ server.js                # MCP server entry point with tool/resource handlers
 
 ## Manifest Structure
 
+### Slot System
+
+**Everything is a slot.** Path depth determines slot granularity.
+
+**Slot Key Format:**
+- Slot key = all numbered path components joined with dots
+- Examples:
+  - `001_main/engineer.md` → slot: `001`
+  - `010_tech/15_mcp_author.md` → slot: `010.15`
+  - `040_output/01_dialect/technical.md` → slot: `040.01`
+
+**Slot Collision:**
+- Only ONE file can occupy each slot key
+- Adding a new file to an occupied slot replaces the existing file
+- Different slot keys coexist independently
+
 ### Directory Naming Convention
 
-**SLOT Directories** (format: `NNN_name`):
-- Only ONE file can be active at a time
-- Adding a new file removes previous SLOT entry
-- Examples: `001_main`, `030_jobs`, `040_output`
+**Numbered Directories** (format: `NNN_name`):
+- Section-level directories (e.g., `001_main`, `010_tech`, `020_pattern`)
+- All files within must have number prefixes for unique slot keys
 
-**LIST Directories** (format: `NNN_name_list`):
-- Multiple files accumulate
-- All added files remain active
-- Examples: `010_tech_list`, `020_pattern_list`
+**Numbered Files** (format: `NN_filename.md`):
+- Files must be prefixed with numbers (e.g., `01_auth0.md`, `15_mcp_author.md`)
+- Number determines the slot key at that path depth
+- Allows multiple files in the same directory with unique slots
+
+**Numbered Subdirectories** (format: `NN_name`):
+- Subsections can be numbered (e.g., `01_dialect`, `3_hair`)
+- Creates nested slot keys (e.g., `040.01`, `070.3`)
+- Allows independent slots within a section
 
 ### Section Organization
 
 Standard sections:
-- `001_main`: Core personality (SLOT)
-- `010_tech_list`: Technical knowledge (LIST)
-- `020_pattern_list`: Behavioral patterns (LIST)
-- `030_jobs`: Professional roles (SLOT)
-- `040_output`: Communication styles (SLOT with subsections)
-- `080_user`: User context (SLOT)
-- `999_end`: Final overrides (SLOT)
+- `001_main`: Core personality
+- `010_tech`: Technical knowledge (files must be numbered: `01_`, `02_`, etc.)
+- `020_pattern`: Behavioral patterns (files must be numbered)
+- `030_jobs`: Professional roles
+- `040_output`: Communication styles with numbered subsections (`01_dialect`, `02_narration`, `03_tone`)
+- `080_user`: User context
+- `999_end`: Final overrides
 
 ### Subsection Rules
 
-- Subsections can have arbitrary depth (e.g., `010_tech_list/frontend/react/hooks/`)
-- Subdirectories must NOT begin with digits (0-9)
-- All `.md` files discovered recursively
+- Subsections can have arbitrary depth (e.g., `010_tech/frontend/react/01_hooks.md`)
+- Numbered subdirectories create nested slot keys
+- Non-numbered subdirectories are organizational (don't affect slot keys)
+- All `.md` files must have number prefixes for unique slot assignment
 - Organizes related components logically
 
 ## Configuration
@@ -82,7 +103,7 @@ PLANS_DIR=./plans
 
 # Comma-separated manifest directories
 # First is root manifest, rest are extensions
-# Later directories override earlier for SLOT entries
+# Later directories have priority for file resolution
 MANIFEST_DIRS=./manifest,../shared_personas/manifest
 ```
 
@@ -103,17 +124,22 @@ Templates use `@` notation to reference manifest files:
 
 ```markdown
 @./manifest/001_main/agent.md
-@./../shared/manifest/010_tech_list/typescript.md
+@./../shared/manifest/010_tech/26_typescript.md
 ```
 
 ### Dependency Resolution
 
 When adding a file via `add` tool:
 1. Extracts all `@` dependencies recursively from target file
-2. Adds dependencies to template first
-3. Adds target file last
-4. For SLOT directories: removes existing SLOT entry before adding
+2. Removes existing files in conflicting slot keys (slot collision detection)
+3. Adds dependencies to template first
+4. Adds target file last
 5. Compiles immediately
+
+**Slot Collision Handling:**
+- Before adding, determines the slot key for the new file and all its dependencies
+- Removes any existing file occupying the same slot key
+- Ensures only one file per slot key in the final template
 
 ### Compilation Process
 
@@ -129,9 +155,9 @@ When adding a file via `add` tool:
 
 MultiManifest searches directories in reverse order (extensions first):
 - Later directories (extensions) override earlier (root)
-- For SLOT sections: later manifests take priority
-- For LIST sections: all manifests contribute
 - File lookup uses fuzzy matching for user convenience
+- Slot collision happens at template level, not manifest level
+- All manifests contribute files, but final template enforces slot uniqueness
 
 ## MCP Tools
 
@@ -139,40 +165,57 @@ MultiManifest searches directories in reverse order (extensions first):
 Add persona component to template.
 
 **Parameters:**
-- `section` (required): Section name (fuzzy matched)
-- `subsection` (optional): Subsection path (fuzzy matched)
+- `slot` (required): Slot identifier from enum (e.g., "tech", "output/dialect")
 - `partial` (required): Filename pattern or "random"
 
 **Behavior:**
-- Fuzzy matches section/subsection names
+- Slot parameter parsed into section/subsection internally
 - Extracts and adds dependencies recursively
-- Removes existing SLOT entries when adding to SLOT
+- Removes existing files in conflicting slot keys (slot collision detection)
 - Compiles immediately after adding
+
+**Slot Examples:**
+```
+slot: "tech" + partial: "mcp_author"
+→ Adds: 010_tech/15_mcp_author.md (slot key: 010.15)
+
+slot: "output/dialect" + partial: "technical"
+→ Adds: 040_output/01_dialect/technical.md (slot key: 040.01)
+```
+
+**Slot Key Collision:**
+- Each file has a slot key derived from numbered path components
+- Adding a file removes any existing file with the same slot key
+- Example: Adding `010_tech/15_mcp_author.md` removes any existing file with slot key `010.15`
 
 ### `remove`
 Remove persona component from template.
 
 **Parameters:**
-- `section` (required): Section to remove from
-- `subsection` (optional): Specific subsection
-- `partial` (optional): Specific file pattern
+- `slot` (required): Slot identifier from enum (e.g., "tech", "output/dialect")
+- `partial` (optional): Specific file pattern to remove
 
 **Behavior:**
-- Removes LIST dependencies automatically
-- Preserves SLOT dependencies for other files
+- Slot parameter parsed into section/subsection internally
+- Removes the specified file and its dependencies by slot key
+- Without `partial`: removes all files in the slot
+- With `partial`: removes specific file matching pattern
+- Dependencies are removed to avoid orphaned references
 - Compiles immediately after removal
 
 ### `list`
 Browse available persona components.
 
 **Parameters:**
-- `section` (optional): Filter by section
-- `subsection` (optional): Filter by subsection
+- `slot` (optional): Slot identifier to filter results (leave empty for all)
 
 **Behavior:**
+- Slot parameter parsed into section/subsection internally
 - Displays all manifests (root and extensions)
 - Shows section/subsection hierarchy
-- Indicates SLOT vs LIST types
+- Shows all available files with their numbering
+- Without `slot`: lists all sections
+- With `slot`: lists files in specific slot
 
 ### `inspect`
 Show current template composition (added via tools.json).
@@ -183,48 +226,35 @@ Show current template composition (added via tools.json).
 **Behavior:**
 - Reads `template.md` for current project
 - Parses all `@` references
-- Groups by section with SLOT/LIST indicators
+- Groups by section and displays slot keys
 - Shows which files are currently active
-- Explains SLOT (only one) vs LIST (multiple) behavior
+- Explains slot key system
 
 **Example Output:**
 ```
 Current Template (D--claudeTools):
 
-# Main (SLOT - only one active)
-  @becca
+# Main
+  @agent [slot: 001]
 
-# Tech List (LIST - accumulates)
-  @windows_bash
-  @nodejs
+# Tech
+  @15_mcp_author [slot: 010.15]
+  @28_working_in_windows_11 [slot: 010.28]
 
-# Look (SLOT - only one active per subsection)
-  @becca_body
-  @daddy_girl_hair
-  @pink_crop_top
+# Pattern
+  @02_long_term_outlook [slot: 020.02]
+  @03_terminal_calude_code_update_bug [slot: 020.03]
+
+# Output
+  @01_technical_dialect [slot: 040.01]
 
 Total: 6 active references
+
+Slot system: Path depth determines slot granularity
+  001_main/file.md              → slot: 001
+  040_output/01_dialect/file.md → slot: 040.01
 ```
 
-### `create`
-Create new persona component.
-
-**Parameters:**
-- `section` (required): Target section
-- `subsection` (optional): Target subsection (required for some sections)
-- `filename` (required): Filename with `.md` extension
-- `secondperson_prompt_from_system_to_assistant` (required): Content in second person
-
-**Guidelines:**
-- Write in second person: "You are...", "You must...", "You always..."
-- 200 chars: Quick reminders
-- 700 chars: Complex instructions
-- 1k-6k chars: Primary roles
-
-**Behavior:**
-- Generates proper markdown structure
-- Writes to appropriate manifest directory (last directory with section)
-- Returns suggested `add` command
 
 ### `set_var`
 Set project-specific variable.
@@ -272,21 +302,19 @@ File resolution order (reverse search):
 3. Root manifest checked last
 4. First match wins
 
-For SLOT sections:
-- Adding file from extension removes root SLOT entry
-- Ensures only one file active per SLOT
-
-For LIST sections:
-- All manifests contribute
-- No override behavior
+Slot collision detection:
+- All manifests contribute files
+- Final template enforces slot uniqueness via slot keys
+- Files with identical slot keys collide (last added wins)
+- Different slot keys coexist independently
 
 ### File Discovery
 
 Recursive search algorithm:
 - Searches section directory and all subdirectories
-- Ignores directories starting with digits at section level
-- Includes all `.md` files found
+- Includes all `.md` files found (numbered and unnumbered)
 - Returns files sorted by manifest priority
+- Numbered files create unique slot keys based on path depth
 
 ## Compilation Details
 
@@ -301,7 +329,7 @@ When compiling referenced files:
 ### Section Header Injection
 
 Compiler adds organizational headers:
-- `#` headers for section directories (e.g., "# Main", "# Tech List")
+- `#` headers for section directories (e.g., "# Main", "# Tech", "# Pattern")
 - `##` headers for numbered subsections
 - Tracks seen sections to avoid duplicates
 
@@ -381,7 +409,7 @@ Manifests can define domain-specific tools via `tools.json`:
 - Located alongside manifest sections
 - Loaded from all configured manifest directories
 - Extends MCP with specialized functionality
-- Keeps role play/domain-specific tools separate from core pageant
+- Keeps domain-specific tools separate from core pageant
 
 ### Format
 
@@ -413,44 +441,15 @@ Manifests can define domain-specific tools via `tools.json`:
 
 **`add` handler:**
 - Forwards to `PersonaManager.handleAdd`
-- `section`: Fixed section (e.g., "070_look")
+- `section`: Fixed section (e.g., "040_output")
 - `useSubsectionParam`: If true, uses `args.subsection` parameter
-- Example: `update_look` tool for changing appearance
+- Example: Custom tools for specific section management
 
 **`inspect_template` handler:**
 - Calls `PersonaManager.handleInspect`
 - Shows current template composition
 - No parameters needed
-- Displays SLOT vs LIST sections
-
-### Example: Look Management Tool
-
-```json
-{
-  "name": "update_look",
-  "description": "Swap out segments of your appearance for image generation",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "subsection": {
-        "type": "string",
-        "enum": ["1_body", "3_hair", "4_attire", "5_style", "6_place"]
-      },
-      "partial": {
-        "type": "string"
-      }
-    },
-    "required": ["subsection", "partial"]
-  },
-  "handler": {
-    "type": "add",
-    "section": "070_look",
-    "useSubsectionParam": true
-  }
-}
-```
-
-This creates `update_look` tool that specifically targets appearance sections, integrating with selfie MCP for image generation.
+- Displays slot keys for each active file
 
 ## Tool Hints
 
@@ -465,7 +464,6 @@ Professional persona configuration:
 - 'tech' sections define technical guidelines
 - 'pattern' sections establish behavioral standards
 - 'output' sections configure communication style
-- 'look' sections define appearance for image generation
 ```
 
 ## Web Editor

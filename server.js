@@ -24,14 +24,14 @@ class PersonaServer {
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
     this.webEditor = new WebEditor(this.manager);
     this.agentBuilder = new AgentBuilder(__dirname);
+
     this.variableNames = [];
     this.toolHints = {};
     this.manifestStructure = {};
     this.customTools = [];
-    this.loadVariableNames();
-    this.loadToolHints();
-    this.loadManifestStructure();
-    this.loadCustomTools();
+    this.slotEnum = [];
+    this.talentDescriptions = [];
+
     this.server = new Server(
       {
         name: 'mcp-pageant',
@@ -45,6 +45,17 @@ class PersonaServer {
         },
       }
     );
+
+    this.initPromise = this.initialize();
+  }
+
+  async initialize() {
+    await this.loadVariableNames();
+    await this.loadToolHints();
+    await this.loadManifestStructure();
+    await this.loadCustomTools();
+    await this.loadSlotEnum();
+    await this.loadTalentDescriptions();
 
     this.setupToolHandlers();
     this.setupPromptHandlers();
@@ -80,17 +91,7 @@ class PersonaServer {
                   structure[section][item] = [];
                 }
 
-                // Check for organizational dirs (only in 070_look/4_attire for now)
-                if (section === '070_look' && item === '4_attire') {
-                  const orgDirs = await fs.readdir(itemPath);
-                  for (const orgDir of orgDirs) {
-                    const orgPath = path.join(itemPath, orgDir);
-                    const orgStat = await fs.stat(orgPath);
-                    if (orgStat.isDirectory()) {
-                      structure[section][item].push(orgDir);
-                    }
-                  }
-                }
+                // Check for organizational subdirectories in sections with deep nesting
               }
             }
           }
@@ -140,6 +141,45 @@ class PersonaServer {
     }
 
     this.customTools = allTools;
+  }
+
+  async loadTalentDescriptions() {
+    const talents = [];
+
+    // Scan 015_talents in all manifest directories
+    for (const manifestDir of this.manager.manifestDirs) {
+      try {
+        const talentsPath = path.join(manifestDir, '015_talents');
+        const files = await fs.readdir(talentsPath);
+
+        for (const file of files) {
+          if (file.endsWith('.md')) {
+            const filePath = path.join(talentsPath, file);
+            const content = await fs.readFile(filePath, 'utf8');
+
+            // Extract frontmatter
+            const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+            if (frontmatterMatch) {
+              const frontmatter = frontmatterMatch[1];
+              const nameMatch = frontmatter.match(/^name:\s*(.+)$/m);
+              const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
+
+              if (nameMatch && descMatch) {
+                talents.push({
+                  name: nameMatch[1].trim(),
+                  description: descMatch[1].trim(),
+                  filename: file.replace('.md', '')
+                });
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // No 015_talents directory in this manifest is fine
+      }
+    }
+
+    this.talentDescriptions = talents;
   }
 
   async loadVariableNames() {
@@ -209,11 +249,58 @@ class PersonaServer {
       }
     }
     const subList = Array.from(subsections).sort().join(', ');
-    return `Optional subsection. Common: ${subList}. Required for 040_output (01_dialect, 02_narration, 03_tone) and 070_look (1_body, 3_hair, 4_attire, 5_style, 6_place)`;
+    return `Optional subsection. Common: ${subList}. Required for 040_output (01_dialect, 02_narration, 03_tone)`;
   }
 
   getFilenameDescription() {
-    return 'Filename (with optional directory for organizational purposes). For 070_look/4_attire, prefix with: casual/, fancy/, lingerie/, office/, etc. Always use .md extension';
+    return 'Filename (with optional directory for organizational purposes). Always use .md extension';
+  }
+
+  async loadSlotEnum() {
+    const slots = [];
+
+    for (const manifestDir of this.manager.manifestDirs) {
+      try {
+        const sections = await fs.readdir(manifestDir);
+
+        for (const section of sections) {
+          const sectionPath = path.join(manifestDir, section);
+          const stat = await fs.stat(sectionPath);
+
+          if (stat.isDirectory() && section.match(/^\d{3}[_-]/)) {
+            const sectionName = section.replace(/^\d{3}[_-]/, '');
+
+            // Always add the section itself (for root-level files)
+            slots.push(sectionName);
+
+            // Check for numbered subsections and add them too
+            const items = await fs.readdir(sectionPath);
+
+            for (const item of items) {
+              const itemPath = path.join(sectionPath, item);
+              const itemStat = await fs.stat(itemPath);
+
+              if (itemStat.isDirectory() && item.match(/^\d+[_-]/)) {
+                const subName = item.replace(/^\d+[_-]/, '');
+                slots.push(`${sectionName}/${subName}`);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        console.error(`Error scanning manifest dir ${manifestDir}:`, error);
+      }
+    }
+
+    this.slotEnum = [...new Set(slots)].sort();
+  }
+
+  slotToSectionSubsection(slot) {
+    if (slot.includes('/')) {
+      const parts = slot.split('/');
+      return { section: parts[0], subsection: parts[1] };
+    }
+    return { section: slot, subsection: undefined };
   }
 
   async handleCustomTool(tool, args) {
@@ -230,6 +317,12 @@ class PersonaServer {
     } else if (handler.type === 'inspect_template') {
       // Inspect handler - shows current template composition
       return await this.manager.handleInspect();
+    } else if (handler.type === 'thrift') {
+      // Thrift handler - inline text override
+      return await this.manager.handleThrift(args);
+    } else if (handler.type === 'talent') {
+      // Talent handler - temporary component with timer
+      return await this.manager.handleTalent(args);
     }
 
     throw new Error(`Unknown custom tool handler type: ${handler.type}`);
@@ -286,61 +379,71 @@ class PersonaServer {
         tools: [
           {
             name: 'add',
-            description: 'Add a persona component to template. SLOT sections (001_main, 030_jobs, 040_output): adding removes previous file - only ONE active. LIST sections (010_tech_list, 020_pattern_list): adding accumulates - MULTIPLE active. Use `inspect` to see current composition.' + this.toolHintsText,
+            description: `Adds Pageant persona components to your system context, modifying who you are.
+
+Pageant defines your identity through composable markdown components organized in manifest directories. Components in the same slot replace each other. Your compiled template is written to ${process.cwd()}/CLAUDE.local.md
+
+Usage notes:
+- Specify \`partial\` to match a component filename (e.g., "athletic" matches "athletic_fit")
+- Use \`partial=random\` to add a random component from the specified slot
+- The tool compiles your persona automatically after adding the component
+
+Manifest directories:
+${this.manager.manifestDirs.map(dir => `- ${dir}`).join('\n')}`,
             inputSchema: {
               type: 'object',
               properties: {
-                section: {
+                slot: {
                   type: 'string',
-                  description: 'Section name (fuzzy matched, e.g., "main", "tech", "pattern"). SLOT sections replace existing, LIST sections accumulate.'
-                },
-                subsection: {
-                  type: 'string',
-                  description: 'Optional subsection (fuzzy matched, e.g., "tone", "body", "attire")'
+                  enum: this.slotEnum,
+                  description: 'Slot to add to'
                 },
                 partial: {
                   type: 'string',
                   description: 'Partial filename to match, or "random" for random selection'
                 }
               },
-              required: ['section', 'partial']
+              required: ['slot', 'partial']
             }
           },
           {
             name: 'remove',
-            description: 'Remove persona components from template. For LIST sections: removes specific files. For SLOT sections: removes entire slot. Use `inspect` to see what\'s currently active.',
+            description: `Removes persona component(s) from your active template and recompiles.
+
+Usage notes:
+- Specify \`partial\` to remove a specific component matching that filename
+- Omit \`partial\` to remove all components in the specified slot
+- The tool compiles your persona automatically after removal`,
             inputSchema: {
               type: 'object',
               properties: {
-                section: {
+                slot: {
                   type: 'string',
-                  description: 'Section name to remove from (fuzzy matched)'
-                },
-                subsection: {
-                  type: 'string',
-                  description: 'Optional subsection to remove (fuzzy matched)'
+                  description: 'Slot to remove from'
                 },
                 partial: {
                   type: 'string',
-                  description: 'Optional partial filename to remove specific file from LIST sections'
+                  description: 'Optional partial filename to remove specific file. Omit to remove all files in slot.'
                 }
               },
-              required: ['section']
+              required: ['slot']
             }
           },
           {
             name: 'list',
-            description: 'List available persona components in manifest. Shows all files you can add to your template. SLOT sections (main, jobs, output) = mutually exclusive choices. LIST sections (tech_list, pattern_list) = can add multiple.',
+            description: `Lists all available persona components you can add to your template.
+
+Usage notes:
+- Returns components organized by section (main, tech, pattern, jobs, output, etc.)
+- Use this tool to discover available components before calling add
+- Slot keys indicate replacement behavior: components with the same slot key replace each other`,
             inputSchema: {
               type: 'object',
               properties: {
-                section: {
+                slot: {
                   type: 'string',
-                  description: 'Optional section name to filter results (fuzzy matched)'
-                },
-                subsection: {
-                  type: 'string',
-                  description: 'Optional subsection name to filter (fuzzy matched, requires section)'
+                  enum: [...this.slotEnum, ''],
+                  description: 'Optional slot to filter results. Leave empty for all.'
                 }
               },
               required: []
@@ -348,7 +451,12 @@ class PersonaServer {
           },
           {
             name: 'set_var',
-            description: 'Set a persona variable value for the current project',
+            description: `Sets a persona variable value for the current project and recompiles.
+
+Usage notes:
+- Variables are used in persona templates for dynamic content substitution
+- Common variables: PROJECT_NAME, AGENT_NAME, DEBUG_MODE, LOG_LEVEL
+- The tool compiles your persona automatically after setting the variable`,
             inputSchema: {
               type: 'object',
               properties: {
@@ -382,7 +490,13 @@ class PersonaServer {
           },
           {
             name: 'build_agent',
-            description: 'Build a new agent with directory structure and MCPs',
+            description: `Creates a new Pageant agent subdirectory within your current project for parallel work.
+
+Usage notes:
+- Generates agent directory with manifest, template, and configuration files
+- Allows multiple agents with different personas to work on the same project
+- Optionally installs specified MCP servers for the new agent
+- Use this tool to add specialized agents (e.g., QA agent, docs agent) alongside your primary agent`,
             inputSchema: {
               type: 'object',
               properties: {
@@ -399,37 +513,21 @@ class PersonaServer {
               required: ['name']
             }
           },
-          {
-            name: 'create',
-            description: 'Create a new persona section with guided content',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                section: {
-                  type: 'string',
-                  description: this.getSectionDescription()
-                },
-                subsection: {
-                  type: 'string',
-                  description: this.getSubsectionDescription()
-                },
-                filename: {
-                  type: 'string',
-                  description: this.getFilenameDescription()
-                },
-                secondperson_prompt_from_system_to_assistant: {
-                  type: 'string',
-                  description: 'Write persona content in second person ("You are...", "You must...", "You always..."). Length: 200 chars for quick reminders, 700 chars for complex instructions, 1k-6k chars for primary roles (main personality, front-end engineer, etc). Be concise.'
-                }
-              },
-              required: ['section', 'filename', 'secondperson_prompt_from_system_to_assistant']
+          ...this.customTools.map(tool => {
+            let description = tool.description;
+
+            // Dynamically append talent list to talent tool description
+            if (tool.name === 'talent' && this.talentDescriptions.length > 0) {
+              description += '\n\nAvailable talents:\n' +
+                this.talentDescriptions.map(t => `- ${t.filename}: ${t.description}`).join('\n');
             }
-          },
-          ...this.customTools.map(tool => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema
-          }))
+
+            return {
+              name: tool.name,
+              description,
+              inputSchema: tool.inputSchema
+            };
+          })
         ]
       };
     });
@@ -440,12 +538,21 @@ class PersonaServer {
 
       try {
         switch (name) {
-          case 'add':
-            return await this.manager.handleAdd(args);
-          case 'remove':
-            return await this.manager.handleRemove(args);
-          case 'list':
-            return await this.manager.handleList(args);
+          case 'add': {
+            const { section, subsection } = this.slotToSectionSubsection(args.slot);
+            return await this.manager.handleAdd({ section, subsection, partial: args.partial });
+          }
+          case 'remove': {
+            const { section, subsection } = this.slotToSectionSubsection(args.slot);
+            return await this.manager.handleRemove({ section, subsection, partial: args.partial });
+          }
+          case 'list': {
+            if (args.slot && args.slot !== '') {
+              const { section, subsection } = this.slotToSectionSubsection(args.slot);
+              return await this.manager.handleList({ section, subsection });
+            }
+            return await this.manager.handleList({});
+          }
           case 'set_var':
             return await this.manager.handleSetVar(args);
           case 'web_editor':
@@ -472,8 +579,6 @@ class PersonaServer {
               };
             }
             break;
-          case 'create':
-            return await this.manager.handleCreate(args);
           case 'build_agent':
             const buildResult = await this.agentBuilder.buildAgent(args.name, {
               mcps: args.mcps || ['pageant']
@@ -572,6 +677,7 @@ class PersonaServer {
   }
 
   async run() {
+    await this.initPromise;
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('MCP Pageant server running (enhanced version with build_agent)');

@@ -14,7 +14,7 @@ function analyzeSectionStructure(lines) {
       const level = headerMatch[1].length;
       const title = headerMatch[2].trim();
 
-      const knownSections = ['Main', 'Pattern List', 'Output', 'Story', 'Play List', 'Look', 'User', 'Jail', 'End'];
+      const knownSections = ['Main', 'Pattern List', 'Output', 'User', 'End'];
       const isMainSection = level === 1 && knownSections.includes(title);
 
       if (isMainSection) {
@@ -63,7 +63,7 @@ export function formatMarkdown(sections) {
       const title = headerMatch[2].trim();
 
       // Determine if this is a known main section
-      const knownSections = ['Main', 'Pattern List', 'Output', 'Story', 'Play List', 'Look', 'User', 'Jail', 'End'];
+      const knownSections = ['Main', 'Pattern List', 'Output', 'User', 'End'];
       const isMainSection = level === 1 && knownSections.includes(title);
 
       if (isMainSection) {
@@ -102,10 +102,7 @@ export function formatMarkdown(sections) {
           formatted.push('');
         }
 
-        // Track subsections (except in Story section)
-        if (currentMainSection !== 'Story') {
-          currentSubSection = title;
-        }
+        currentSubSection = title;
         formatted.push(`## ${title}`);
         lastLineWasBlank = false;
         lastLineWasHeader = true;

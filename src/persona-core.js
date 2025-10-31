@@ -10,7 +10,7 @@ export class PersonaCore {
     return refs.sort((a, b) => {
       // Extract parts from both paths
       const parseRef = (ref) => {
-        // Handle both old format (@./manifest/) and new format (@./../mcp_persona/manifest/)
+        // Handle both old format (@./manifest/) and new format (@./../pageant_extension/manifest/)
         const parts = ref.split('/');
         const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
 
@@ -67,37 +67,25 @@ export class PersonaCore {
 
   /**
    * Get the slot key for a reference path
-   * Returns null for LIST entries, slot key for SLOT entries
+   * Slot key = all numbered path components joined with dots
+   * Examples:
+   *   001_main/engineer.md                    -> "001"
+   *   040_output/01_dialect/technical.md      -> "040.01"
+   *   030_jobs/01_backend/05_database.md      -> "030.01.05"
    */
   getSlotKey(refPath) {
-    // Handle both old and new path formats
     const parts = refPath.split('/');
-    const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
+    const numberedParts = [];
 
-    if (manifestIndex < 0) return null;
+    for (const part of parts) {
+      // Match directories/files that start with numbers
+      const match = part.match(/^(\d+)[_-]/);
+      if (match) {
+        numberedParts.push(match[1]);
+      }
+    }
 
-    const sectionDir = parts[manifestIndex + 1];
-    const subsectionOrFile = parts[manifestIndex + 2];
-
-    if (!sectionDir) return null;
-    
-    // Check if section is a LIST (ends with _list) 
-    if (sectionDir.endsWith('_list')) {
-      return null; // LIST section, no slot
-    }
-    
-    // Check if section is a SLOT (starts with number)
-    if (!/^\d+/.test(sectionDir)) {
-      return null; // Not a numbered section, no slot
-    }
-    
-    // Check if subsection is a numbered slot (like 1_database, 3_auth)
-    if (subsectionOrFile && subsectionOrFile.match(/^\d+[_-]/)) {
-      return `${sectionDir}/${subsectionOrFile}`;
-    }
-    
-    // Otherwise it's just the section itself
-    return sectionDir;
+    return numberedParts.length > 0 ? numberedParts.join('.') : null;
   }
 
   /**
@@ -156,19 +144,21 @@ export class PersonaCore {
     
     // Sort references using custom sort
     this.sortReferences(fileRefs);
-    
-    // Filter duplicates based on slot keys
+
+    // Filter slot collisions - keep the winner for each slot key
     const slotWinners = new Map();
-    const listRefs = new Set();
-    
+    const noSlotRefs = [];
+
     for (const ref of fileRefs) {
       const slotKey = this.getSlotKey(ref);
-      
+
       if (!slotKey) {
-        // LIST entry - keep all unique
-        listRefs.add(ref);
+        // No slot key - keep unique refs
+        if (!noSlotRefs.includes(ref)) {
+          noSlotRefs.push(ref);
+        }
       } else {
-        // SLOT entry - keep winner
+        // Has slot key - winner takes the slot
         if (!slotWinners.has(slotKey)) {
           slotWinners.set(slotKey, ref);
         } else if (ref === newReference || dependencies.includes(ref)) {
@@ -177,9 +167,9 @@ export class PersonaCore {
         }
       }
     }
-    
+
     // Combine and sort
-    const filteredRefs = [...listRefs, ...slotWinners.values()];
+    const filteredRefs = [...noSlotRefs, ...slotWinners.values()];
     this.sortReferences(filteredRefs);
     
     // Rebuild template
@@ -209,8 +199,8 @@ export class PersonaCore {
   }
 
   /**
-   * Remove a file and its LIST dependencies from template
-   * Keeps SLOT dependencies
+   * Remove a file and its dependencies from template
+   * With new slot system: all dependencies have slot keys, we keep dependencies that other files might need
    */
   async removeFileFromTemplate(templateContent, fileToRemove, filePath) {
     const lines = templateContent.split('\n');
@@ -218,36 +208,9 @@ export class PersonaCore {
     // Get dependencies of the file being removed
     const dependencies = await this.extractDependencies(filePath);
 
-    // Determine which dependencies to remove (only LIST entries)
+    // For now, just remove the main file
+    // Dependencies will be removed by slot collision when adding new files
     const toRemove = [fileToRemove];
-
-    for (const dep of dependencies) {
-      const depParts = dep.split('/');
-      const manifestIndex = depParts.findIndex(p => p === 'manifest' || p.includes('manifest'));
-
-      const depSectionDir = manifestIndex >= 0 ? depParts[manifestIndex + 1] : depParts[2];
-      const depSubsectionDir = manifestIndex >= 0 ? depParts[manifestIndex + 2] : depParts[3];
-
-      let shouldRemove = false;
-
-      if (depSectionDir && depSectionDir.endsWith('_list')) {
-        // LIST section - should be removed
-        shouldRemove = true;
-      } else if (depSubsectionDir && /^\d+[_-]/.test(depSubsectionDir)) {
-        // Numbered subsection (SLOT) - should NOT be removed
-        shouldRemove = false;
-      } else if (depSectionDir && /^\d+[_-]/.test(depSectionDir) && !depSectionDir.endsWith('_list')) {
-        // Numbered section (SLOT) - should NOT be removed
-        shouldRemove = false;
-      } else {
-        // Non-numbered, non-list - organizational, remove it
-        shouldRemove = true;
-      }
-
-      if (shouldRemove) {
-        toRemove.push(dep);
-      }
-    }
     
     // Build new template without removed items
     const newLines = [];

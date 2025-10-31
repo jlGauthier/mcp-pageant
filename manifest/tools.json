@@ -1,31 +1,7 @@
 [
   {
-    "name": "update_look",
-    "description": "Swap out segments of your appearance for image generation. Changes your Look section which selfie MCP uses to generate images.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "subsection": {
-          "type": "string",
-          "enum": ["1_body", "3_hair", "4_attire", "5_style", "6_place"],
-          "description": "Which appearance aspect to update: 1_body (physical features), 3_hair (hairstyle/color), 4_attire (outfit/clothing), 5_style (accessories/makeup), 6_place (location/background)"
-        },
-        "partial": {
-          "type": "string",
-          "description": "Partial filename to match from 070_look subsection"
-        }
-      },
-      "required": ["subsection", "partial"]
-    },
-    "handler": {
-      "type": "add",
-      "section": "070_look",
-      "useSubsectionParam": true
-    }
-  },
-  {
     "name": "inspect",
-    "description": "Show your current template composition - what persona components are active right now. Reveals which files built you, distinguishing between SLOT sections (only one active) and LIST sections (multiple accumulate).",
+    "description": "Shows active persona components currently loaded in your template.\n\nUsage notes:\n- Returns each component with its slot key (e.g., slot: 001, slot: 040.01)\n- Use this tool to verify which components are active before adding or removing\n- Slot keys show replacement relationships between components",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -33,6 +9,53 @@
     },
     "handler": {
       "type": "inspect_template"
+    }
+  },
+  {
+    "name": "thrift",
+    "description": "Try inline text overrides without creating manifest files. Used to experiment with options before committing to permanent files.\n\nUsage notes:\n- Adds inline text override to template using slot key syntax\n- Format: SLOT_KEY - virtual/path/name: content text\n- Replaces any existing component in the same slot (file or inline)\n- Remove with standard remove tool by matching name or slot key\n- Ideal for testing variations quickly",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "slot_key": {
+          "type": "string",
+          "description": "Numeric slot identifier (e.g., 070.5, 040.01, 001)"
+        },
+        "virtual_path": {
+          "type": "string",
+          "description": "Organizational path for the override (e.g., output/tone/custom_name)"
+        },
+        "content": {
+          "type": "string",
+          "description": "The text content to inject at this slot"
+        }
+      },
+      "required": ["slot_key", "virtual_path", "content"]
+    },
+    "handler": {
+      "type": "thrift"
+    }
+  },
+  {
+    "name": "talent",
+    "description": "Temporarily loads a talent component with automatic cleanup after specified duration.\n\nUsage notes:\n- Loads talent from 015_talents section for specified time\n- Auto-removes talent when timer expires\n- Talent descriptions are read from frontmatter at runtime\n- Use for temporary context injection (prompting expertise, techniques, knowledge)",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "talent_name": {
+          "type": "string",
+          "description": "Name of talent file to load (without .md extension)"
+        },
+        "time_minutes": {
+          "type": "number",
+          "description": "Duration in minutes before auto-removal (default: 5)",
+          "default": 5
+        }
+      },
+      "required": ["talent_name"]
+    },
+    "handler": {
+      "type": "talent"
     }
   }
 ]
