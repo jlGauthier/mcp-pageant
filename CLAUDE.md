@@ -1,480 +1,653 @@
-# MCP Pageant - Dynamic Persona Management System
+# MCP Pageant - Implementation Documentation
 
-Professional persona management for AI assistants via Model Context Protocol.
+## Project Organization
 
-## Architecture Overview
-
-### Core Components
 ```
-server.js                # MCP server entry point with tool/resource handlers
+mcp_pageant/
+├── server.js                    # MCP server entry point
 ├── src/
-│   ├── PersonaManager.js    # Core persona compilation engine
-│   ├── MultiManifest.js     # Multi-directory file resolution
-│   ├── FuzzyMatch.js        # Fuzzy matching for user input
-│   ├── formatMarkdown.js    # Persona output formatting
-│   ├── WebEditor.js         # Web-based editor backend
-│   └── AgentBuilder.js      # Agent scaffolding system
-├── manifest/                # Root manifest (persona library)
-├── plans/                   # Compiled personas per project
-└── .env                     # Configuration
+│   ├── PersonaManager.js        # Core persona engine (1759 lines)
+│   ├── MultiManifest.js         # Multi-directory file resolution (580 lines)
+│   ├── FuzzyMatch.js            # Fuzzy matching utility (135 lines)
+│   ├── persona-core.js          # Template operations (251 lines)
+│   ├── formatMarkdown.js        # Markdown formatting (151 lines)
+│   ├── WebEditor.js             # Web UI backend (352 lines)
+│   └── AgentBuilder.js          # Agent creation (241 lines)
+├── manifest/                    # Component library
+│   ├── 001_main/               # Core personalities
+│   ├── 005_jobs/               # Professional roles
+│   ├── 010_tech/               # Technical knowledge
+│   ├── 015_talents/            # Temporary skills
+│   ├── 020_pattern/            # Behavioral patterns
+│   ├── 040_output/             # Communication styles
+│   ├── 080_user/               # User context
+│   ├── 999_end/                # Final overrides
+│   ├── default_vars.txt        # Default variable values
+│   ├── tool_hints.txt          # UI guidance text
+│   └── tools.json              # Custom MCP tools
+├── plans/                       # Compiled personas by ID
+│   └── {agent-id}/
+│       ├── template.md          # Active component references
+│       ├── persona.md           # Compiled output
+│       └── vars.txt             # Project variables
+├── editor-ui/                   # Web editor frontend
+├── tests/                       # Test suites
+└── .env                         # Configuration
 ```
 
-### Key Terminology
+## Core Architecture
 
-**Manifest** (Root): Primary persona component library
-- Located at `./manifest` by default
-- Contains organized sections (001_main, 010_tech, 020_pattern, etc.)
-- Configured via `MANIFEST_DIRS` in `.env`
+### Layer 1: MCP Interface (server.js)
 
-**Extensions**: Additional manifest directories
-- Configured via comma-separated `MANIFEST_DIRS`
-- Can add new sections or override existing components
-- Later directories have priority for new file creation
+**Responsibility:** MCP protocol implementation
 
-**Template**: Project-specific composition
-- Stored in `plans/<project-path>/template.md`
-- References manifest files using `@` notation
-- Compiles to `CLAUDE.local.md` for real-time updates
+**Key Components:**
+- `PersonaServer` class - MCP server wrapper
+- Tool handlers - Route tool calls to PersonaManager
+- Resource handlers - Expose persona as MCP resource
+- Prompt handlers - Template compilation for MCP prompts
 
-**Plans Directory**: Storage for compiled personas
-- One subdirectory per project (based on working directory path)
-- Contains: `template.md`, `persona.md`, `vars.txt`
-
-## Manifest Structure
-
-### Slot System
-
-**Everything is a slot.** Path depth determines slot granularity.
-
-**Slot Key Format:**
-- Slot key = all numbered path components joined with dots
-- Examples:
-  - `001_main/engineer.md` → slot: `001`
-  - `010_tech/15_mcp_author.md` → slot: `010.15`
-  - `040_output/01_dialect/technical.md` → slot: `040.01`
-
-**Slot Collision:**
-- Only ONE file can occupy each slot key
-- Adding a new file to an occupied slot replaces the existing file
-- Different slot keys coexist independently
-
-### Directory Naming Convention
-
-**Numbered Directories** (format: `NNN_name`):
-- Section-level directories (e.g., `001_main`, `010_tech`, `020_pattern`)
-- All files within must have number prefixes for unique slot keys
-
-**Numbered Files** (format: `NN_filename.md`):
-- Files must be prefixed with numbers (e.g., `01_auth0.md`, `15_mcp_author.md`)
-- Number determines the slot key at that path depth
-- Allows multiple files in the same directory with unique slots
-
-**Numbered Subdirectories** (format: `NN_name`):
-- Subsections can be numbered (e.g., `01_dialect`, `3_hair`)
-- Creates nested slot keys (e.g., `040.01`, `070.3`)
-- Allows independent slots within a section
-
-### Section Organization
-
-Standard sections:
-- `001_main`: Core personality
-- `010_tech`: Technical knowledge (files must be numbered: `01_`, `02_`, etc.)
-- `020_pattern`: Behavioral patterns (files must be numbered)
-- `030_jobs`: Professional roles
-- `040_output`: Communication styles with numbered subsections (`01_dialect`, `02_narration`, `03_tone`)
-- `080_user`: User context
-- `999_end`: Final overrides
-
-### Subsection Rules
-
-- Subsections can have arbitrary depth (e.g., `010_tech/frontend/react/01_hooks.md`)
-- Numbered subdirectories create nested slot keys
-- Non-numbered subdirectories are organizational (don't affect slot keys)
-- All `.md` files must have number prefixes for unique slot assignment
-- Organizes related components logically
-
-## Configuration
-
-### Environment Variables (.env)
-
-```bash
-# Location of compiled personas (default: ./plans)
-PLANS_DIR=./plans
-
-# Comma-separated manifest directories
-# First is root manifest, rest are extensions
-# Later directories have priority for file resolution
-MANIFEST_DIRS=./manifest,../shared_personas/manifest
+**Tool Registration:**
+```javascript
+// Dynamic tool loading from manifest/tools.json
+this.customTools.forEach(tool => {
+  this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (request.params.name === tool.name) {
+      return await this.handleCustomTool(tool, request.params.arguments);
+    }
+  });
+});
 ```
 
-### Variable Substitution
-
-Variables cascade with precedence:
-1. Manifest defaults (`manifest/default_vars.txt` - each manifest loads in order)
-2. Global defaults (`plans/default_vars.txt`)
-3. Project overrides (`plans/<project>/vars.txt`)
-
-Variables use `${VAR_NAME}` syntax in persona files.
-
-## Template System
-
-### Reference Syntax
-
-Templates use `@` notation to reference manifest files:
-
-```markdown
-@./manifest/001_main/agent.md
-@./../shared/manifest/010_tech/26_typescript.md
+**Slot Enum Generation:**
+```javascript
+// Converts manifest structure to slot enum for MCP
+slotToSectionSubsection(slot) {
+  // "tech" → {section: "010_tech", subsection: null}
+  // "output/tone" → {section: "040_output", subsection: "01_tone"}
+}
 ```
 
-### Dependency Resolution
+### Layer 2: Business Logic (PersonaManager.js)
 
-When adding a file via `add` tool:
-1. Extracts all `@` dependencies recursively from target file
-2. Removes existing files in conflicting slot keys (slot collision detection)
-3. Adds dependencies to template first
-4. Adds target file last
-5. Compiles immediately
+**Responsibility:** Persona composition and management
 
-**Slot Collision Handling:**
-- Before adding, determines the slot key for the new file and all its dependencies
-- Removes any existing file occupying the same slot key
-- Ensures only one file per slot key in the final template
+**Core Operations:**
+
+1. **Stable ID System** (lines 108-229)
+```javascript
+getProjectDirName() {
+  // Check for PAGEANT_ID in CLAUDE.local.md
+  const id = this.extractPageantId(claudeLocalContent);
+
+  if (id && this.templateExists(id)) {
+    // ID exists → move/rename detected
+    return id;
+  } else if (id && this.isValidCopy(id)) {
+    // ID exists but template in use → copy detected
+    return this.generateCopyId(id);
+  } else {
+    // No ID → new agent, generate from path
+    return this.generateIdFromPath(process.cwd());
+  }
+}
+```
+
+2. **Component Addition** (lines 856-1051)
+```javascript
+async handleAdd({ slot, partial, duration }) {
+  // 1. Resolve section/subsection from slot
+  const { section, subsection } = this.parseSlot(slot);
+
+  // 2. Find file via fuzzy matching
+  const fileInfo = await this.multiManifest.findFile(section, subsection, partial);
+
+  // 3. Extract dependencies
+  const deps = await this.extractDependencies(fileInfo.path);
+
+  // 4. Check slot collisions
+  const slotKey = this.getSlotKey(fileInfo.path);
+  const conflicts = this.findSlotConflicts(slotKey);
+
+  // 5. Update template (remove conflicts, add deps, add file)
+  await this.updateTemplate(fileInfo, deps, conflicts);
+
+  // 6. Compile to CLAUDE.local.md
+  await this.compilePersona(process.cwd());
+}
+```
+
+3. **Compilation** (lines 663-812)
+```javascript
+async compileFromTemplate(template) {
+  const sections = [];
+
+  // Parse template references
+  for (const line of template.split('\n')) {
+    if (line.startsWith('@')) {
+      // Resolve file path
+      const filePath = await this.multiManifest.resolveReference(line);
+
+      // Read and clean content
+      let content = await fs.readFile(filePath, 'utf8');
+      content = this.stripHeaders(content);        // Remove first #
+      content = this.stripDependencies(content);   // Remove @lines
+      content = this.demoteHeaders(content);       // ## → ###
+      content = this.substituteVariables(content); // ${VAR} → value
+
+      sections.push({ section, content });
+    }
+  }
+
+  // Format with section headers
+  return this.formatWithSectionHeaders(sections);
+}
+```
+
+4. **Slot Collision Detection** (lines 269-295, 369-388)
+```javascript
+getSlotKey(refPath) {
+  // Extract numbered components from path
+  // "040_output/01_dialect/technical.md" → "040.01"
+
+  const parts = refPath.split('/');
+  const numberedParts = parts
+    .map(p => p.match(/^(\d+)[_-]/)?.[1])
+    .filter(Boolean);
+
+  return numberedParts.join('.');
+}
+
+findSlotConflicts(slotKey, newRef) {
+  // Find existing template refs with same slot key
+  return this.currentTemplate
+    .filter(ref => this.getSlotKey(ref) === slotKey && ref !== newRef);
+}
+```
+
+### Layer 3: Data Access (MultiManifest.js)
+
+**Responsibility:** File resolution across multiple manifest directories
+
+**Overlay System:**
+```javascript
+// Configured in .env
+MANIFEST_DIRS=./manifest,../company_personas,~/personal_personas
+
+// Resolution order: REVERSE (later directories override)
+for (let i = this.manifestDirs.length - 1; i >= 0; i--) {
+  const manifestDir = this.manifestDirs[i];
+  const file = await this.findFileInManifest(manifestDir, section, subsection, partial);
+  if (file) return file; // First match wins
+}
+```
+
+**File Operations:**
+- `findFile(section, subsection, partial)` - Fuzzy search for component
+- `findFiles(section, subsection)` - List all files in section
+- `listSections()` - Get all section directories
+- `resolveReference(refPath)` - Convert @reference to absolute path
+- `writeFile(section, subsection, filename, content)` - Create new component
+
+**Write Priority:**
+```javascript
+// Writes go to LAST directory that has the section
+// Or FIRST directory (main manifest) if section doesn't exist
+const targetManifest = this.findLastManifestWithSection(section)
+  || this.manifestDirs[0];
+```
+
+### Layer 4: Utilities
+
+**FuzzyMatch.js** - Fuzzy string matching
+```javascript
+score(str, search) {
+  // 1.0 = exact match
+  // 0.8-1.0 = contains match (weighted by length ratio)
+  // 0.3-0.7 = sequential character match (weighted by density)
+  // 0.0-0.3 = partial character match
+}
+
+clean(str) {
+  // Remove numeric prefixes: "001_main" → "main"
+  // Lowercase: "Main" → "main"
+  // Remove separators: "main-section" → "mainsection"
+}
+```
+
+**persona-core.js** - Template operations
+```javascript
+sortReferences(refs) {
+  // Sort by: section number → subsection number → filename
+}
+
+addFileToTemplate(template, newRef, filePath) {
+  // 1. Extract deps from file
+  // 2. Find slot collisions
+  // 3. Remove conflicting refs
+  // 4. Add deps + new ref
+  // 5. Sort by slot key
+}
+```
+
+**formatMarkdown.js** - Section header injection
+```javascript
+analyzeSectionStructure(lines) {
+  // Find sections with single subsections
+  // Return map of section → subsections
+}
+
+formatMarkdown(sections) {
+  // Combine section + subsection headers for single-item sections
+  // "# Output\n## Tone: Independent" → "# Output: Tone - Independent"
+}
+```
+
+## Data Flow
+
+### Adding a Component
+
+```
+User: add slot:tech partial:postgres
+
+1. server.js receives MCP tool call
+   ↓
+2. Maps slot → section/subsection
+   slot:"tech" → section:"010_tech", subsection:null
+   ↓
+3. PersonaManager.handleAdd()
+   ↓
+4. MultiManifest.findFile("010_tech", null, "postgres")
+   ↓
+5. FuzzyMatch.findBest(files, "postgres")
+   → Finds "26_postgresql.md"
+   ↓
+6. Extract dependencies from 26_postgresql.md
+   → [@./manifest/020_pattern/02_best_practices.md]
+   ↓
+7. Calculate slot key
+   → "010.26"
+   ↓
+8. Find conflicts with slot "010.26"
+   → Removes old file if exists
+   ↓
+9. Update template.md
+   - Add dependency refs
+   - Add new ref
+   - Sort by slot key
+   ↓
+10. Compile template → CLAUDE.local.md
+    - Read all @referenced files
+    - Strip headers/deps
+    - Substitute variables
+    - Inject section headers
+    - Write output
+   ↓
+11. Return success to MCP client
+```
 
 ### Compilation Process
 
-1. Read `template.md` from `PLANS_DIR/<project>/`
-2. Resolve each `@` reference using MultiManifest priority
-3. Strip main headers and `@` lines from content
-4. Apply variable substitution (`${VAR}` → value)
-5. Format with proper section headers
-6. Write to `CLAUDE.local.md` in working directory
-7. **Fail loudly if any reference is missing**
-
-### Manifest Path Resolution
-
-MultiManifest searches directories in reverse order (extensions first):
-- Later directories (extensions) override earlier (root)
-- File lookup uses fuzzy matching for user convenience
-- Slot collision happens at template level, not manifest level
-- All manifests contribute files, but final template enforces slot uniqueness
-
-## MCP Tools
-
-### `add`
-Add persona component to template.
-
-**Parameters:**
-- `slot` (required): Slot identifier from enum (e.g., "tech", "output/dialect")
-- `partial` (required): Filename pattern or "random"
-
-**Behavior:**
-- Slot parameter parsed into section/subsection internally
-- Extracts and adds dependencies recursively
-- Removes existing files in conflicting slot keys (slot collision detection)
-- Compiles immediately after adding
-
-**Slot Examples:**
 ```
-slot: "tech" + partial: "mcp_author"
-→ Adds: 010_tech/15_mcp_author.md (slot key: 010.15)
+template.md:
+  @./manifest/001_main/agent.md
+  @./manifest/010_tech/17_nodejs.md
+  @./manifest/040_output/01_dialect/technical.md
 
-slot: "output/dialect" + partial: "technical"
-→ Adds: 040_output/01_dialect/technical.md (slot key: 040.01)
-```
+↓ Read each file
 
-**Slot Key Collision:**
-- Each file has a slot key derived from numbered path components
-- Adding a file removes any existing file with the same slot key
-- Example: Adding `010_tech/15_mcp_author.md` removes any existing file with slot key `010.15`
+001_main/agent.md:
+  # Agent Personality
+  ## Guidelines
+  You are a professional software engineer...
 
-### `remove`
-Remove persona component from template.
+↓ Strip first header, strip @deps
 
-**Parameters:**
-- `slot` (required): Slot identifier from enum (e.g., "tech", "output/dialect")
-- `partial` (optional): Specific file pattern to remove
+  ## Guidelines
+  You are a professional software engineer...
 
-**Behavior:**
-- Slot parameter parsed into section/subsection internally
-- Removes the specified file and its dependencies by slot key
-- Without `partial`: removes all files in the slot
-- With `partial`: removes specific file matching pattern
-- Dependencies are removed to avoid orphaned references
-- Compiles immediately after removal
+↓ Demote headers (## → ###)
 
-### `list`
-Browse available persona components.
+  ### Guidelines
+  You are a professional software engineer...
 
-**Parameters:**
-- `slot` (optional): Slot identifier to filter results (leave empty for all)
+↓ Substitute variables ${VAR}
 
-**Behavior:**
-- Slot parameter parsed into section/subsection internally
-- Displays all manifests (root and extensions)
-- Shows section/subsection hierarchy
-- Shows all available files with their numbering
-- Without `slot`: lists all sections
-- With `slot`: lists files in specific slot
+  ### Guidelines
+  You are a professional software engineer working on E-commerce Platform...
 
-### `inspect`
-Show current template composition (added via tools.json).
+↓ Collect all sections
 
-**Parameters:**
-- None
+sections = [
+  { section: "001_main", content: "### Guidelines\n..." },
+  { section: "010_tech", content: "### Node.js\n..." },
+  { section: "040_output", content: "### Technical Dialect\n..." }
+]
 
-**Behavior:**
-- Reads `template.md` for current project
-- Parses all `@` references
-- Groups by section and displays slot keys
-- Shows which files are currently active
-- Explains slot key system
-
-**Example Output:**
-```
-Current Template (D--claudeTools):
+↓ Inject section headers
 
 # Main
-  @agent [slot: 001]
+### Guidelines
+You are a professional software engineer...
 
 # Tech
-  @15_mcp_author [slot: 010.15]
-  @28_working_in_windows_11 [slot: 010.28]
+### Node.js
+You build Node.js applications...
 
-# Pattern
-  @02_long_term_outlook [slot: 020.02]
-  @03_terminal_calude_code_update_bug [slot: 020.03]
+# Output: Technical Dialect
+You communicate clearly and precisely...
 
-# Output
-  @01_technical_dialect [slot: 040.01]
+↓ Write to CLAUDE.local.md with PAGEANT_ID
 
-Total: 6 active references
+<!-- PAGEANT_ID: c--james--myproject -->
 
-Slot system: Path depth determines slot granularity
-  001_main/file.md              → slot: 001
-  040_output/01_dialect/file.md → slot: 040.01
+# Main
+### Guidelines
+...
 ```
 
+## Agent Portability
 
-### `set_var`
-Set project-specific variable.
+### Stable ID System
 
-**Parameters:**
-- `variable` (required): Variable name (enum from default_vars.txt)
-- `value` (required): New value
+**Problem:** Template storage was path-based (`plans/C--project--path/`)
+- Moving project breaks persona lookup
+- Renaming directory breaks persona lookup
+- Case sensitivity issues (FS vs fs)
+- Can't copy agents (path collision)
 
-**Behavior:**
-- Writes to `plans/<project>/vars.txt`
-- Overrides manifest and global defaults
-- Variables available immediately in next compilation
+**Solution:** Stable IDs embedded in CLAUDE.local.md
 
-### `web_editor`
-Launch visual persona editor.
+```markdown
+<!-- PAGEANT_ID: c--james--feudle--.pageant--fs -->
+<!-- PAGEANT_ROOT: D:\claudeTools -->
+```
 
-**Parameters:**
-- `action` (optional): "open" or "close" (default: "open")
-
-**Behavior:**
-- Starts HTTP server (port 5442)
-- Provides visual component browser
-- Real-time persona preview
-- Auto-refreshes on template changes
-
-### `build_agent`
-Create new agent with directory structure.
-
-**Parameters:**
-- `name` (required): Agent identifier (alphanumeric + underscores/hyphens)
-- `mcps` (optional): List of MCP servers (default: ["pageant"])
-
-**Behavior:**
-- Creates agent directory structure
-- Sets up agent-specific MCP configuration
-- Initializes empty persona template
-
-## MultiManifest System
-
-### Priority Rules
-
-File resolution order (reverse search):
-1. Last extension manifest checked first
-2. Middle extension manifests
-3. Root manifest checked last
-4. First match wins
-
-Slot collision detection:
-- All manifests contribute files
-- Final template enforces slot uniqueness via slot keys
-- Files with identical slot keys collide (last added wins)
-- Different slot keys coexist independently
-
-### File Discovery
-
-Recursive search algorithm:
-- Searches section directory and all subdirectories
-- Includes all `.md` files found (numbered and unnumbered)
-- Returns files sorted by manifest priority
-- Numbered files create unique slot keys based on path depth
-
-## Compilation Details
-
-### Header Stripping
-
-When compiling referenced files:
-- Removes first `#` header only (main title)
-- Preserves all subsection headers (`##`, `###`)
-- Strips blank lines after main header
-- Removes all `@` dependency lines
-
-### Section Header Injection
-
-Compiler adds organizational headers:
-- `#` headers for section directories (e.g., "# Main", "# Tech", "# Pattern")
-- `##` headers for numbered subsections
-- Tracks seen sections to avoid duplicates
-
-### Format Normalization
-
-Final formatting pass:
-- Ensures blank line before section headers
-- Removes duplicate consecutive headers
-- Normalizes header levels based on hierarchy
-- Caps at `###` for deeply nested content
-
-## Error Handling
-
-### Strict Compilation
-
-No silent failures:
-- Missing file referenced in template → Error with exact path
-- Invalid variable reference → Warning
-- Malformed `@` path → Error
-- Duplicate `/manifest/` in path → Warning with auto-fix
-
-### Common Errors
-
-**"File not found" during compilation:**
-- Template references file that doesn't exist in any manifest
-- Check `@` path syntax
-- Verify file exists in configured manifests
-
-**"File has been unexpectedly modified":**
-- Claude Code file modification bug
-- Use absolute Windows paths with drive letters for file operations
-- See: https://github.com/anthropics/claude-code/issues/7443
-
-## Development Guidelines
-
-### Testing
-
-Always load `.env` when testing:
+**ID Generation:**
 ```javascript
-import dotenv from 'dotenv';
-dotenv.config();
-// Your test code here
+generateIdFromPath(path) {
+  // Lowercase, replace separators, remove special chars
+  // C:\James\Feudle\.pageant\FS → c--james--feudle--.pageant--fs
+
+  return path
+    .toLowerCase()
+    .replace(/[:\\/]/g, '--')
+    .replace(/[^a-z0-9_-]/g, '_');
+}
 ```
 
-### Path Handling
+**Move Detection:**
+```javascript
+// On compilation:
+const existingId = extractPageantId(claudeLocalMd);
 
-- Use absolute paths in `.env` configuration
-- MultiManifest handles cross-platform paths internally
-- References in templates use forward slashes
-- Windows paths converted automatically for ComfyUI integration
+if (existingId && fs.existsSync(`plans/${existingId}/template.md`)) {
+  // ID found, template exists → use existing template
+  projectDirName = existingId;
+} else {
+  // No ID or template doesn't exist → generate new ID
+  projectDirName = generateIdFromPath(cwd);
+  embedIdInClaudeLocal(projectDirName);
+}
+```
 
-### Manifest Organization
+**Copy Detection:**
+```javascript
+// If ID exists but template already loaded elsewhere:
+if (existingId && this.isTemplateInUse(existingId)) {
+  // This is a copy → generate new ID
+  const newId = `${existingId}--copy--${Date.now()}`;
+  embedIdInClaudeLocal(newId);
+  return newId;
+}
+```
 
-Best practices:
-- Use descriptive filenames for fuzzy matching
-- Keep subdirectories shallow for readability
-- Organize related components together
-- Document dependencies at top of files
+### Project-Scoped MCPs
 
-### Variable Naming
+**Claude Code MCP Resolution Order:**
+1. `.mcp.json` in current working directory (highest priority)
+2. `~/.claude.json` global config (lowest priority)
 
-Conventions:
-- UPPERCASE_WITH_UNDERSCORES
-- Descriptive names (PROJECT_NAME not PN)
-- Define in manifest `default_vars.txt` for tool enum
+**Agent Structure:**
+```
+.pageant/
+├── fs/
+│   ├── .mcp.json           # Agent-specific MCPs
+│   └── CLAUDE.local.md     # Persona (with PAGEANT_ID)
+```
 
-## Project Directory Naming
+**Benefits:**
+- No global config pollution
+- Each agent can have different MCPs
+- MCPs travel with agent directory
+- Check into version control
+- Portable across projects
 
-Project paths converted to directory names:
-- `D:\projects\my-app` → `D--projects--my-app`
-- Used for `plans/<project-name>/` subdirectory
-- Ensures unique persona per project
+**Limitation:**
+- Absolute paths (`D:\claudeTools\mcp_pageant\server.js`)
+- Not portable across machines
+- Each machine needs its own .mcp.json with correct paths
 
-## Custom Tools (tools.json)
+## Manifest System
 
-Manifests can define domain-specific tools via `tools.json`:
-- Located alongside manifest sections
-- Loaded from all configured manifest directories
-- Extends MCP with specialized functionality
-- Keeps domain-specific tools separate from core pageant
+### Section Organization
 
-### Format
+```
+manifest/
+├── 001_main/              # Slot 001 - Core personality (ONE active)
+├── 005_jobs/              # Slot 005 - Professional role (ONE active)
+├── 010_tech/              # Slot 010.X - Technical knowledge (MANY active)
+│   ├── 15_mcp_author.md   # Slot 010.15
+│   ├── 17_nodejs.md       # Slot 010.17
+│   └── 26_postgresql.md   # Slot 010.26
+├── 020_pattern/           # Slot 020.X - Behavioral patterns (MANY active)
+├── 040_output/            # Slot 040.X - Communication style
+│   ├── 01_dialect/        # Slot 040.01.X
+│   ├── 02_narration/      # Slot 040.02.X
+│   └── 03_tone/           # Slot 040.03.X
+└── 999_end/               # Slot 999 - Final override (ONE active)
+```
 
-```json
-[
-  {
-    "name": "tool_name",
-    "description": "What this tool does",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "param_name": {
-          "type": "string",
-          "description": "Parameter description"
-        }
-      },
-      "required": ["param_name"]
-    },
-    "handler": {
-      "type": "handler_type",
-      "section": "optional_section",
-      "useSubsectionParam": true
-    }
+**Slot Key Rules:**
+- **Only numbered components** count toward slot key
+- **Non-numbered directories** are organizational only
+- **Depth determines granularity**
+
+Examples:
+```
+010_tech/17_nodejs.md                    → 010.17
+010_tech/backend/17_nodejs.md            → 010.17 (backend not numbered)
+010_tech/15_backend/17_nodejs.md         → 010.15.17
+040_output/01_dialect/technical.md       → 040.01
+040_output/dialect/technical.md          → 040 (dialect not numbered)
+```
+
+### Component Dependencies
+
+**Syntax:**
+```markdown
+# Component Title
+@./manifest/020_pattern/02_best_practices.md
+@./manifest/010_tech/utils/logging.md
+
+## Content starts here
+...
+```
+
+**Rules:**
+- Dependencies listed before first `#` header
+- Resolved recursively
+- Circular dependencies prevented via `processed` Set
+- Missing dependencies logged, don't crash compilation
+
+**Auto-Loading:**
+When you add a component, its dependencies are automatically added to the template first.
+
+## Variable System
+
+### Three-Tier Cascade
+
+**1. Manifest Defaults** (`manifest/default_vars.txt`)
+```
+DEBUG_MODE=false
+LOG_LEVEL=info
+```
+
+**2. Global Defaults** (`plans/default_vars.txt`)
+```
+LOG_LEVEL=debug  # Overrides manifest
+PROJECT_NAME=Untitled
+```
+
+**3. Project Overrides** (`plans/{id}/vars.txt`)
+```
+PROJECT_NAME=E-commerce Platform  # Final value
+TECH_STACK=React, Node.js, PostgreSQL
+```
+
+### Substitution
+
+**Pattern:** `${VARIABLE_NAME}` in markdown files
+
+**Process:**
+```javascript
+substituteVariables(text) {
+  for (const [key, value] of Object.entries(this.variables)) {
+    const regex = new RegExp(`\\$\\{${key}\\}`, 'g');
+    text = text.replace(regex, value);
   }
-]
+  return text;
+}
 ```
 
-### Handler Types
+**No escaping:** Can't include literal `${...}` in text
+**No validation:** Undefined variables stay as-is (`${MISSING}` → `${MISSING}`)
 
-**`add` handler:**
-- Forwards to `PersonaManager.handleAdd`
-- `section`: Fixed section (e.g., "040_output")
-- `useSubsectionParam`: If true, uses `args.subsection` parameter
-- Example: Custom tools for specific section management
+## Testing Strategy
 
-**`inspect_template` handler:**
-- Calls `PersonaManager.handleInspect`
-- Shows current template composition
-- No parameters needed
-- Displays slot keys for each active file
+### Test Coverage
 
-## Tool Hints
+**Well-Tested:**
+- ✓ MultiManifest.js (383 lines of tests)
+  - File finding across N directories
+  - Priority/override behavior
+  - Write operations
+  - Edge cases (permissions, missing dirs)
+- ✓ FuzzyMatch.js (160 lines of tests)
+  - Exact matching
+  - Contains matching
+  - Sequential matching
+  - Object extraction
 
-Each manifest can include `tool_hints.txt`:
-- Appended to tool descriptions in MCP
-- Provides context-specific guidance
-- Helps users understand available components
+**Untested:**
+- ✗ PersonaManager.js (0 tests, 1759 lines)
+- ✗ Slot collision logic
+- ✗ Compilation process
+- ✗ Inline overrides (thrift/talent)
+- ✗ Agent building
+- ✗ Web editor
 
-Example:
-```text
-Professional persona configuration:
-- 'tech' sections define technical guidelines
-- 'pattern' sections establish behavioral standards
-- 'output' sections configure communication style
+### Test Infrastructure
+
+**vitest.config.js:**
+```javascript
+{
+  environment: 'node',
+  testTimeout: 10000,  // Filesystem operations
+  watchExclude: ['**/plans/**', '**/manifest/**']  // Exclude generated data
+}
 ```
 
-## Web Editor
+**Test Pattern:**
+```javascript
+describe('MultiManifest', () => {
+  let tempDirs = [];
 
-Accessible at `http://localhost:5442` when active:
-- Tree view of all manifests and components
-- Real-time compiled persona preview
-- Variable editor with live substitution
-- Project selector
-- Fuzzy search across all components
+  beforeEach(async () => {
+    // Create temp directories
+  });
 
----
+  afterEach(async () => {
+    // Clean up temp directories
+  });
 
-**Professional Persona Management for AI Assistants**
+  it('should find files across N directories', async () => {
+    // Use real filesystem, no mocks
+  });
+});
+```
+
+## Known Issues
+
+### 1. Shared Dependency Removal
+
+**Problem:** If files A and B both depend on C, removing A also removes C (breaks B)
+
+**Location:** PersonaManager.js:1221-1237
+
+**Solution:** Implement reference counting for dependencies
+
+### 2. No Undo/Rollback
+
+**Problem:** Removals are permanent, can't revert changes
+
+**Workaround:** Keep backups of template.md
+
+**Future:** Add `.pageant/history/` with snapshots
+
+### 3. Inline Override Testing
+
+**Problem:** Thrift/talent features are untested
+
+**Location:** PersonaManager.js:640-660 (parsing), 678-735 (compilation)
+
+**Risk:** Critical feature, no coverage
+
+### 4. Hardcoded Web Editor Port
+
+**Problem:** Port 52100 hardcoded, conflicts if already in use
+
+**Location:** WebEditor.js:11
+
+**Solution:** Add port range fallback (52100-52110)
+
+## Performance Characteristics
+
+**Compilation:** O(n*m) where n=template lines, m=avg file size
+- Typical: 50-200ms (10-20 components, 2KB each)
+- Large: 500ms-1s (50+ components, 10KB each)
+
+**Fuzzy Matching:** O(n*m) where n=files, m=search length
+- Typical: <10ms (100 files)
+- Large: 50-100ms (1000+ files)
+
+**Multi-Manifest Lookup:** O(n*m) where n=manifests, m=files per manifest
+- Linear scan per manifest
+- No caching of directory listings
+- Acceptable for 2-5 manifests with 100-500 files each
+
+**Bottlenecks:**
+- Full file reads (no streaming)
+- Sequential manifest loading (could parallelize)
+- No string caching in FuzzyMatch
+- Recursive dependency resolution (potential exponential blowup)
+
+## Future Improvements
+
+### High Priority
+1. Add PersonaManager test suite
+2. Implement reference counting for dependencies
+3. Add undo/rollback system
+4. Validate inline overrides
+
+### Medium Priority
+1. Extract TemplateCompiler from PersonaManager
+2. Add variable introspection tools
+3. Add manifest provenance tracking
+4. Parallelize manifest loading
+
+### Low Priority
+1. Migrate to TypeScript
+2. Cache directory listings
+3. Stream large files
+4. Add performance monitoring
