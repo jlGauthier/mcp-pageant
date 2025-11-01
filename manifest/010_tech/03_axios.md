@@ -4,7 +4,7 @@
 - Set baseURL for API consistency
 - Use interceptors for auth tokens
 - Handle errors with catch blocks
-- Set appropriate timeout values
+- Set timeout values
 - Use axios instances for different APIs
 
 ### DON'T

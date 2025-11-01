@@ -148,7 +148,7 @@ export class MultiManifest {
   }
 
   /**
-   * Write a file to the appropriate manifest directory
+   * Write a file to the correct manifest directory
    * Writes to LAST directory that has the parent section (or main if none exist)
    * @param {boolean} createDir - Whether to create directory if it doesn't exist
    */

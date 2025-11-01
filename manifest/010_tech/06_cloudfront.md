@@ -4,7 +4,7 @@
 - Configure proper cache behaviors
 - Use origin request policies
 - Implement WAF rules for security
-- Set appropriate TTLs
+- Set TTLs
 - Invalidate after deployments
 
 ### DON'T

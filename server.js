@@ -30,6 +30,7 @@ class PersonaServer {
     this.manifestStructure = {};
     this.customTools = [];
     this.slotEnum = [];
+    this.slotKeyMap = new Map(); // Maps slot name -> slot key
     this.talentDescriptions = [];
 
     this.server = new Server(
@@ -50,6 +51,7 @@ class PersonaServer {
   }
 
   async initialize() {
+    await this.manager.projectDirNameInitialized;
     await this.loadVariableNames();
     await this.loadToolHints();
     await this.loadManifestStructure();
@@ -268,10 +270,12 @@ class PersonaServer {
           const stat = await fs.stat(sectionPath);
 
           if (stat.isDirectory() && section.match(/^\d{3}[_-]/)) {
+            const sectionNum = section.match(/^(\d{3})[_-]/)[1];
             const sectionName = section.replace(/^\d{3}[_-]/, '');
 
             // Always add the section itself (for root-level files)
             slots.push(sectionName);
+            this.slotKeyMap.set(sectionName, sectionNum);
 
             // Check for numbered subsections and add them too
             const items = await fs.readdir(sectionPath);
@@ -281,8 +285,11 @@ class PersonaServer {
               const itemStat = await fs.stat(itemPath);
 
               if (itemStat.isDirectory() && item.match(/^\d+[_-]/)) {
+                const subNum = item.match(/^(\d+)[_-]/)[1];
                 const subName = item.replace(/^\d+[_-]/, '');
-                slots.push(`${sectionName}/${subName}`);
+                const slotName = `${sectionName}/${subName}`;
+                slots.push(slotName);
+                this.slotKeyMap.set(slotName, `${sectionNum}.${subNum}`);
               }
             }
           }
@@ -301,6 +308,38 @@ class PersonaServer {
       return { section: parts[0], subsection: parts[1] };
     }
     return { section: slot, subsection: undefined };
+  }
+
+  scheduleAutoRemoval(slot, partial, duration) {
+    const durationMs = {
+      'session': null, // Handle session cleanup separately
+      '1day': 24 * 60 * 60 * 1000,
+      '1hour': 60 * 60 * 1000,
+      '10min': 10 * 60 * 1000,
+      '5min': 5 * 60 * 1000,
+      '1min': 60 * 1000,
+      '30sec': 30 * 1000
+    }[duration];
+
+    if (duration === 'session') {
+      // Session cleanup happens when MCP disconnects - not implemented yet
+      console.log(`Component '${partial}' marked for session cleanup (not yet implemented)`);
+      return;
+    }
+
+    if (durationMs) {
+      setTimeout(async () => {
+        try {
+          const { section, subsection } = this.slotToSectionSubsection(slot);
+          await this.manager.handleRemove({ section, subsection, partial });
+          console.log(`Auto-removed '${partial}' from slot '${slot}' after ${duration}`);
+        } catch (error) {
+          console.error(`Failed to auto-remove '${partial}':`, error.message);
+        }
+      }, durationMs);
+
+      console.log(`Scheduled auto-removal of '${partial}' in ${duration}`);
+    }
   }
 
   async handleCustomTool(tool, args) {
@@ -386,6 +425,8 @@ Pageant defines your identity through composable markdown components organized i
 Usage notes:
 - Specify \`partial\` to match a component filename (e.g., "athletic" matches "athletic_fit")
 - Use \`partial=random\` to add a random component from the specified slot
+- Put \`partial\` in quotes to add inline content directly (e.g., "custom text here")
+- Use \`duration\` to auto-remove after specified time (default: kept permanently)
 - The tool compiles your persona automatically after adding the component
 
 Manifest directories:
@@ -400,7 +441,13 @@ ${this.manager.manifestDirs.map(dir => `- ${dir}`).join('\n')}`,
                 },
                 partial: {
                   type: 'string',
-                  description: 'Partial filename to match, or "random" for random selection'
+                  description: 'Partial filename to match, "random" for random selection, or quoted string for inline content'
+                },
+                duration: {
+                  type: 'string',
+                  enum: ['kept', 'session', '1day', '1hour', '10min', '5min', '1min', '30sec'],
+                  description: 'How long to keep this component (default: kept)',
+                  default: 'kept'
                 }
               },
               required: ['slot', 'partial']
@@ -539,8 +586,74 @@ Usage notes:
       try {
         switch (name) {
           case 'add': {
+            const duration = args.duration || 'kept';
+
+            // Check if partial is direct content (starts and ends with quotes or contains newlines)
+            if (args.partial && (args.partial.includes('\n') || (args.partial.startsWith('"') && args.partial.endsWith('"')))) {
+              // Strip quotes if present
+              const content = args.partial.startsWith('"') && args.partial.endsWith('"')
+                ? args.partial.slice(1, -1)
+                : args.partial;
+
+              // Look up slot key from the map we built during initialization
+              let slotKey = this.slotKeyMap.get(args.slot);
+              if (!slotKey) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `Error: Unknown slot "${args.slot}"`
+                  }]
+                };
+              }
+
+              // If temporary (not kept), use override slot key so it doesn't replace base
+              let expiresAt = null;
+              if (duration !== 'kept') {
+                slotKey = `${slotKey}.override`;
+
+                // Calculate expiration timestamp
+                const durationMs = {
+                  'session': null,
+                  '1day': 24 * 60 * 60 * 1000,
+                  '1hour': 60 * 60 * 1000,
+                  '10min': 10 * 60 * 1000,
+                  '5min': 5 * 60 * 1000,
+                  '1min': 60 * 1000,
+                  '30sec': 30 * 1000
+                }[duration];
+
+                if (durationMs) {
+                  expiresAt = Date.now() + durationMs;
+                }
+              }
+
+              // Route to thrift handler
+              const virtualPath = `${args.slot}/inline_${Date.now()}`;
+              const result = await this.manager.handleThrift({
+                slot_key: slotKey,
+                virtual_path: virtualPath,
+                content,
+                expiresAt
+              });
+
+              // Schedule auto-removal if not kept
+              if (duration !== 'kept') {
+                this.scheduleAutoRemoval(args.slot, virtualPath.split('/').pop(), duration);
+              }
+
+              return result;
+            }
+
+            // Normal file-based add
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
-            return await this.manager.handleAdd({ section, subsection, partial: args.partial });
+            const result = await this.manager.handleAdd({ section, subsection, partial: args.partial });
+
+            // Schedule auto-removal if not kept
+            if (duration !== 'kept') {
+              this.scheduleAutoRemoval(args.slot, args.partial, duration);
+            }
+
+            return result;
           }
           case 'remove': {
             const { section, subsection } = this.slotToSectionSubsection(args.slot);

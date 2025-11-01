@@ -36,6 +36,10 @@ export class PersonaManager extends PersonaCore {
 
     // Override for web editor project switching
     this.overrideProjectDirName = null;
+
+    // Cache project directory name - calculated once at startup
+    this.projectDirName = null;
+    this.projectDirNameInitialized = this.initializeProjectDirName();
   }
   async loadVariables() {
     this.variables = {};
@@ -91,18 +95,147 @@ export class PersonaManager extends PersonaCore {
     }
     return result;
   }
+  // Generate lowercase path-based ID from a directory path
+  generatePathId(projectPath) {
+    const pathParts = projectPath
+      .toLowerCase()
+      .replace(/^[a-z]:/, (match) => match[0])
+      .split(/[\\\/]/)
+      .filter(part => part.length > 0);
+    return pathParts.join('--');
+  }
+
+  // Extract PAGEANT_ID from CLAUDE.local.md
+  async extractPageantId() {
+    try {
+      const claudeLocalPath = path.join(process.cwd(), 'CLAUDE.local.md');
+      const content = await fs.readFile(claudeLocalPath, 'utf8');
+      const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
+      return match ? match[1].trim() : null;
+    } catch (error) {
+      // CLAUDE.local.md doesn't exist yet
+      return null;
+    }
+  }
+
+  // Write PAGEANT_ID to CLAUDE.local.md
+  async writePageantId(id) {
+    const claudeLocalPath = path.join(process.cwd(), 'CLAUDE.local.md');
+    try {
+      let content = await fs.readFile(claudeLocalPath, 'utf8');
+
+      // Check if ID already exists
+      if (content.match(/<!--\s*PAGEANT_ID:/)) {
+        // Replace existing ID
+        content = content.replace(
+          /<!--\s*PAGEANT_ID:\s*.+?\s*-->/,
+          `<!-- PAGEANT_ID: ${id} -->`
+        );
+      } else {
+        // Prepend ID to top of file
+        content = `<!-- PAGEANT_ID: ${id} -->\n\n${content}`;
+      }
+
+      await fs.writeFile(claudeLocalPath, content, 'utf8');
+    } catch (error) {
+      // File doesn't exist yet, will be created during compile
+      // We'll add the ID during compilation
+    }
+  }
+
+  // Find plan directory with case-insensitive matching
+  async findPlanDirectory(targetId) {
+    try {
+      const entries = await fs.readdir(this.plansDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && entry.name.toLowerCase() === targetId.toLowerCase()) {
+          return entry.name; // Return actual directory name (preserves case)
+        }
+      }
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Initialize project directory name once at startup
+  async initializeProjectDirName() {
+    const currentPath = process.cwd();
+    const currentPathId = this.generatePathId(currentPath);
+
+    // Try to read existing ID from CLAUDE.local.md
+    const existingId = await this.extractPageantId();
+
+    if (!existingId) {
+      // No ID exists - check if a plan directory exists with case-insensitive match
+      const matchingDir = await this.findPlanDirectory(currentPathId);
+      if (matchingDir) {
+        // Found existing directory with different case - use it
+        await this.writePageantId(currentPathId);
+        this.projectDirName = matchingDir;
+        return;
+      }
+      // No existing directory - new project, use current path ID
+      await this.writePageantId(currentPathId);
+      this.projectDirName = currentPathId;
+      return;
+    }
+
+    if (existingId.toLowerCase() === currentPathId.toLowerCase()) {
+      // ID matches current path (case-insensitive) - find actual directory
+      const matchingDir = await this.findPlanDirectory(currentPathId);
+      this.projectDirName = matchingDir || currentPathId;
+      return;
+    }
+
+    // ID doesn't match current path - detect move or copy
+    // Try case-insensitive lookup for old ID
+    const oldPlanDir = await this.findPlanDirectory(existingId);
+    const oldTemplateExists = oldPlanDir ?
+      await fs.access(path.join(this.plansDir, oldPlanDir, 'template.md')).then(() => true).catch(() => false) :
+      false;
+
+    if (oldTemplateExists) {
+      // Old template exists - this is a MOVE
+      const oldPlanPath = path.join(this.plansDir, oldPlanDir);
+      const newPlanPath = path.join(this.plansDir, currentPathId);
+
+      // Move the entire plan directory
+      await fs.rename(oldPlanPath, newPlanPath);
+
+      // Update ID in CLAUDE.local.md
+      await this.writePageantId(currentPathId);
+
+      console.error(`[Pageant] Moved plan: ${oldPlanDir} → ${currentPathId}`);
+      this.projectDirName = currentPathId;
+      return;
+    } else {
+      // Old template doesn't exist - this is a COPY or orphaned ID
+      // Check if current path already has a directory
+      const matchingDir = await this.findPlanDirectory(currentPathId);
+      if (matchingDir) {
+        await this.writePageantId(currentPathId);
+        this.projectDirName = matchingDir;
+        return;
+      }
+
+      // Create new plan directory with current path ID
+      await this.writePageantId(currentPathId);
+
+      console.error(`[Pageant] New instance: ${currentPathId} (previous ID: ${existingId})`);
+      this.projectDirName = currentPathId;
+      return;
+    }
+  }
+
   getProjectDirName() {
     // Check for web editor override first
     if (this.overrideProjectDirName) {
       return this.overrideProjectDirName;
     }
-
-    const projectPath = process.cwd();
-    const pathParts = projectPath.replace(/^[A-Z]:/, (match) => match[0])
-      .split(/[\\\/]/)
-      .filter(part => part.length > 0);
-    return pathParts.join('--');
+    return this.projectDirName;
   }
+
   getTemplatePath() {
     return path.join(this.plansDir, this.getProjectDirName(), 'template.md');
   }
@@ -504,16 +637,25 @@ export class PersonaManager extends PersonaCore {
   }
 
   // Parse inline text override
-  // Format: SLOT_KEY - virtual/path/name: content text here
+  // Format: SLOT_KEY - virtual/path/name [expires:timestamp]: content text here
   // Example: 040.01 - output/dialect/friendly: Warm conversational tone
+  // Example with expiration: 020.5.override - pattern/temp_rule [expires:1762005000000]: Always verify edge cases
   parseInlineOverride(line) {
-    const match = line.match(/^(\d+(?:\.\d+)*)\s*-\s*([^:]+):\s*(.+)$/);
+    const match = line.match(/^(\d+(?:\.\d+)*)\s*-\s*([^:]+?)(?:\s*\[expires:(\d+)\])?\s*:\s*(.+)$/);
     if (!match) return null;
+
+    const expiresAt = match[3] ? parseInt(match[3], 10) : null;
+
+    // Check if expired
+    if (expiresAt && Date.now() > expiresAt) {
+      return { expired: true, slotKey: match[1] };
+    }
 
     return {
       slotKey: match[1],
       virtualPath: match[2].trim(),
-      content: match[3].trim()
+      content: match[4].trim(),
+      expiresAt
     };
   }
 
@@ -524,6 +666,9 @@ export class PersonaManager extends PersonaCore {
 
     const lines = templateContent.split('\n');
 
+    // Track expired items to remove from template
+    const expiredSlots = [];
+
     // Build a map of all references: slot key -> { path, isOverride, inline }
     const refMap = new Map();
     for (const line of lines) {
@@ -532,6 +677,12 @@ export class PersonaManager extends PersonaCore {
       // Check for inline text override first
       const inlineOverride = this.parseInlineOverride(trimmed);
       if (inlineOverride) {
+        if (inlineOverride.expired) {
+          // Mark for removal
+          expiredSlots.push(inlineOverride.slotKey);
+          continue;
+        }
+
         refMap.set(inlineOverride.slotKey, {
           inline: true,
           virtualPath: inlineOverride.virtualPath,
@@ -650,7 +801,9 @@ export class PersonaManager extends PersonaCore {
     }
 
     // PHASE 2: Format with look-ahead context
-    return this.formatWithContext(fileDataList);
+    const formatted = this.formatWithContext(fileDataList);
+
+    return { formatted, expiredSlots };
   }
 
   async compilePersona(projectPath) {
@@ -673,7 +826,15 @@ export class PersonaManager extends PersonaCore {
     }
 
     try {
-      const formattedContent = await this.compileFromTemplate(template);
+      const { formatted: formattedContent, expiredSlots } = await this.compileFromTemplate(template);
+
+      // Remove expired slots from template
+      if (expiredSlots && expiredSlots.length > 0) {
+        for (const slotKey of expiredSlots) {
+          await this.removeSlotByKey(templatePath, slotKey);
+        }
+        console.log(`Removed ${expiredSlots.length} expired component(s): ${expiredSlots.join(', ')}`);
+      }
 
       // Write formatted persona to plans directory (for backup/reference)
       await fs.writeFile(personaPath, formattedContent);
@@ -1557,7 +1718,7 @@ ${secondperson_prompt_from_system_to_assistant}`;
     }
   }
 
-  async handleThrift({ slot_key, virtual_path, content }) {
+  async handleThrift({ slot_key, virtual_path, content, expiresAt }) {
     const projectPath = process.cwd();
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
@@ -1565,8 +1726,9 @@ ${secondperson_prompt_from_system_to_assistant}`;
     // Ensure project directory exists
     await fs.mkdir(projectDir, { recursive: true });
 
-    // Build the inline override line
-    const inlineLine = `${slot_key} - ${virtual_path}: ${content}`;
+    // Build the inline override line with optional expiration
+    const expiresPart = expiresAt ? ` [expires:${expiresAt}]` : '';
+    const inlineLine = `${slot_key} - ${virtual_path}${expiresPart}: ${content}`;
 
     // Remove any existing component in this slot
     await this.removeSlotByKey(templatePath, slot_key);

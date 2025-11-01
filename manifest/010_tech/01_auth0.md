@@ -4,7 +4,7 @@
 - Use SDK methods for auth flows
 - Validate tokens server-side
 - Implement refresh token rotation
-- Set appropriate token expiry
+- Set token expiry
 - Use rules for custom claims
 
 ### DON'T

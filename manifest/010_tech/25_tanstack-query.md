@@ -3,7 +3,7 @@
 ### DO
 - Use query keys consistently
 - Implement proper error boundaries
-- Set staleTime appropriately
+- Set staleTime
 - Use mutations for data changes
 - Prefetch data when possible
 

@@ -370,7 +370,7 @@ Features:
 
 ## Creating Custom Components
 
-Add new `.md` files to appropriate manifest directories:
+Add new `.md` files to correct manifest directories:
 
 ```markdown
 # /manifest/010_tech_list/my_tech.md
