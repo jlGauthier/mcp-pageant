@@ -641,7 +641,7 @@ export class PersonaManager extends PersonaCore {
   // Example: 040.01 - output/dialect/friendly: Warm conversational tone
   // Example with expiration: 020.5.override - pattern/temp_rule [expires:1762005000000]: Always verify edge cases
   parseInlineOverride(line) {
-    const match = line.match(/^(\d+(?:\.\d+)*)\s*-\s*([^:]+?)(?:\s*\[expires:(\d+)\])?\s*:\s*(.+)$/);
+    const match = line.match(/^(\d+(?:\.\d+)*(?:\.\w+)?)\s*-\s*([^:]+?)(?:\s*\[expires:(\d+)\])?\s*:\s*(.+)$/);
     if (!match) return null;
 
     const expiresAt = match[3] ? parseInt(match[3], 10) : null;
@@ -716,6 +716,11 @@ export class PersonaManager extends PersonaCore {
       // Handle inline text overrides
       const inlineOverride = this.parseInlineOverride(trimmed);
       if (inlineOverride) {
+        // Skip expired overrides
+        if (inlineOverride.expired) {
+          continue;
+        }
+
         // Extract filename from virtual path (last component)
         const pathParts = inlineOverride.virtualPath.split('/');
         const filename = pathParts[pathParts.length - 1];
@@ -1064,7 +1069,8 @@ export class PersonaManager extends PersonaCore {
       const inlineOverride = this.parseInlineOverride(trimmed);
       if (inlineOverride && inlineOverride.slotKey === slotKey) {
         // Skip this line - it's in the same slot we're replacing
-        console.log(`Removing slot ${slotKey}: ${inlineOverride.virtualPath}`);
+        const pathInfo = inlineOverride.expired ? '(expired)' : inlineOverride.virtualPath;
+        console.log(`Removing slot ${slotKey}: ${pathInfo}`);
         continue;
       }
 
@@ -1139,7 +1145,7 @@ export class PersonaManager extends PersonaCore {
 
         // Check inline overrides
         const inlineOverride = this.parseInlineOverride(trimmed);
-        if (inlineOverride && inlineOverride.virtualPath.includes(partial)) {
+        if (inlineOverride && !inlineOverride.expired && inlineOverride.virtualPath.includes(partial)) {
           filesToRemove.push(trimmed);
           break;
         }

@@ -5,47 +5,51 @@ Claude Code desktop application with MCP (Model Context Protocol) server support
 
 ## Critical Architecture Understanding
 
-### MCP Configuration - The Truth
+### MCP Configuration Options
 
-**ALL MCP configuration is in the global `C:\Users\jgaut\.claude.json`:**
-- Indexed by working directory path (the project/agent location)
-- Modified via `claude mcp add/remove` commands FROM that working directory
-- Each project/agent path gets its own entry
+**Two configuration approaches:**
 
-**There is NO separate agent-local claude.json for MCPs.**
+**1. Project-Scoped `.mcp.json` (Recommended for agents)**
+- File located in working directory: `.mcp.json`
+- Highest priority - overrides global config
+- Portable with agent directory
+- AgentBuilder auto-generates this for new agents
 
-### Adding MCPs to Agents
-
-**Correct approach:**
-```bash
-# CD into the agent directory, then add MCPs
-cd "C:/James/feudle/.pageant/TW"
-claude mcp add lace D:\claudeTools\mcp_lace\server.js
-claude mcp add selfie D:\claudeTools\selfie\server.js
-claude mcp add utils D:\claudeTools\mcp_utils\server.js
-claude mcp add pageant D:\claudeTools\mcp_pageant\server.js
-```
-
-This updates the global `.claude.json` with an entry for `C:\James\feudle\.pageant\TW`.
-
-**Example global `.claude.json` structure:**
+**Example `.mcp.json`:**
 ```json
 {
-  "projects": {
-    "D:\claudeTools": {
-      "mcpServers": {
-        "lace": { "command": "bun", "args": [".\mcp_lace\server.js"] },
-        "pageant": { "command": ".\mcp_pageant\server.js" }
-      }
+  "mcpServers": {
+    "pageant": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["D:\\claudeTools\\mcp_pageant\\server.js"],
+      "env": {}
     },
-    "C:\James\feudle\.pageant\TW": {
-      "mcpServers": {
-        "lace": { "command": "D:\claudeTools\mcp_lace\server.js" },
-        "pageant": { "command": "D:\claudeTools\mcp_pageant\server.js" }
-      }
+    "lace": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["D:\\claudeTools\\mcp_lace\\server.js"],
+      "env": {}
     }
   }
 }
+```
+
+**2. Global `~/.claude.json`**
+- Indexed by working directory path
+- Modified via `claude mcp add/remove` commands
+- Shared across all projects
+- Can become bloated with many agents
+
+**Adding MCPs manually:**
+```bash
+# Option 1: Use claude mcp commands (updates global config)
+cd "C:/James/feudle/.pageant/TW"
+claude mcp add lace D:\claudeTools\mcp_lace\server.js
+claude mcp add pageant D:\claudeTools\mcp_pageant\server.js
+
+# Option 2: Create .mcp.json in agent directory (preferred)
+# AgentBuilder does this automatically when building agents
 ```
 
 ## Managing Large .claude.json Files

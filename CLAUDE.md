@@ -404,6 +404,27 @@ if (existingId && this.isTemplateInUse(existingId)) {
 
 ### Project-Scoped MCPs
 
+**AgentBuilder creates `.mcp.json` in each agent directory** (AgentBuilder.js:73-123)
+
+```javascript
+// Creates .mcp.json with absolute paths to MCP servers
+const mcpConfig = {
+  mcpServers: {
+    pageant: {
+      type: "stdio",
+      command: "bun",
+      args: ["D:\\claudeTools\\mcp_pageant\\server.js"],
+      env: {}
+    }
+  }
+};
+
+await fs.writeFile(
+  path.join(agentPath, '.mcp.json'),
+  JSON.stringify(mcpConfig, null, 2)
+);
+```
+
 **Claude Code MCP Resolution Order:**
 1. `.mcp.json` in current working directory (highest priority)
 2. `~/.claude.json` global config (lowest priority)
@@ -412,21 +433,29 @@ if (existingId && this.isTemplateInUse(existingId)) {
 ```
 .pageant/
 ├── fs/
-│   ├── .mcp.json           # Agent-specific MCPs
-│   └── CLAUDE.local.md     # Persona (with PAGEANT_ID)
+│   ├── .mcp.json           # Agent-specific MCPs (auto-generated)
+│   ├── CLAUDE.local.md     # Persona (with PAGEANT_ID)
+│   └── .claude/
+│       └── settings.local.json
 ```
 
-**Benefits:**
-- No global config pollution
-- Each agent can have different MCPs
-- MCPs travel with agent directory
-- Check into version control
-- Portable across projects
+**Supported MCPs** (hardcoded in AgentBuilder.js:80-105):
+- `pageant` - Persona management
+- `lace` - Web scraping, code analysis
+- `selfie` - Image generation
+- `utils` - Utilities
 
-**Limitation:**
-- Absolute paths (`D:\claudeTools\mcp_pageant\server.js`)
-- Not portable across machines
-- Each machine needs its own .mcp.json with correct paths
+**Benefits:**
+- No global `.claude.json` pollution
+- Each agent carries its own MCP config
+- MCPs travel with agent directory
+- Safe to copy agents between projects
+- No risk of corrupting global config
+
+**Limitations:**
+- Absolute paths not portable across machines
+- Must rebuild agents on new machine or manually update paths
+- New MCPs require code change to AgentBuilder.js
 
 ## Manifest System
 

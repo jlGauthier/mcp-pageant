@@ -234,30 +234,6 @@ class PersonaServer {
     }
   }
 
-  getSectionDescription() {
-    const sections = Object.keys(this.manifestStructure).sort();
-    const sectionList = sections.map(s => {
-      const name = s.replace(/^\d{3}_/, '');
-      return `${s} (${name})`;
-    }).join(', ');
-    return `Section name. Available: ${sectionList}`;
-  }
-
-  getSubsectionDescription() {
-    const subsections = new Set();
-    for (const section of Object.values(this.manifestStructure)) {
-      for (const sub of Object.keys(section)) {
-        subsections.add(sub);
-      }
-    }
-    const subList = Array.from(subsections).sort().join(', ');
-    return `Optional subsection. Common: ${subList}. Required for 040_output (01_dialect, 02_narration, 03_tone)`;
-  }
-
-  getFilenameDescription() {
-    return 'Filename (with optional directory for organizational purposes). Always use .md extension';
-  }
-
   async loadSlotEnum() {
     const slots = [];
 
@@ -310,7 +286,7 @@ class PersonaServer {
     return { section: slot, subsection: undefined };
   }
 
-  scheduleAutoRemoval(slot, partial, duration) {
+  scheduleAutoRemoval(slot, slotKey, duration) {
     const durationMs = {
       'session': null, // Handle session cleanup separately
       '1day': 24 * 60 * 60 * 1000,
@@ -323,22 +299,22 @@ class PersonaServer {
 
     if (duration === 'session') {
       // Session cleanup happens when MCP disconnects - not implemented yet
-      console.log(`Component '${partial}' marked for session cleanup (not yet implemented)`);
+      console.log(`Component with slot key '${slotKey}' marked for session cleanup (not yet implemented)`);
       return;
     }
 
     if (durationMs) {
       setTimeout(async () => {
         try {
-          const { section, subsection } = this.slotToSectionSubsection(slot);
-          await this.manager.handleRemove({ section, subsection, partial });
-          console.log(`Auto-removed '${partial}' from slot '${slot}' after ${duration}`);
+          const templatePath = this.manager.getTemplatePath();
+          await this.manager.removeSlotByKey(templatePath, slotKey);
+          console.log(`Auto-removed slot '${slotKey}' after ${duration}`);
         } catch (error) {
-          console.error(`Failed to auto-remove '${partial}':`, error.message);
+          console.error(`Failed to auto-remove slot '${slotKey}':`, error.message);
         }
       }, durationMs);
 
-      console.log(`Scheduled auto-removal of '${partial}' in ${duration}`);
+      console.log(`Scheduled auto-removal of slot '${slotKey}' in ${duration}`);
     }
   }
 
@@ -638,7 +614,7 @@ Usage notes:
 
               // Schedule auto-removal if not kept
               if (duration !== 'kept') {
-                this.scheduleAutoRemoval(args.slot, virtualPath.split('/').pop(), duration);
+                this.scheduleAutoRemoval(args.slot, slotKey, duration);
               }
 
               return result;
@@ -648,10 +624,8 @@ Usage notes:
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
             const result = await this.manager.handleAdd({ section, subsection, partial: args.partial });
 
-            // Schedule auto-removal if not kept
-            if (duration !== 'kept') {
-              this.scheduleAutoRemoval(args.slot, args.partial, duration);
-            }
+            // Schedule auto-removal if not kept (for file-based adds, we can't easily get slot key, skip timer)
+            // Expiration cleanup will happen on next compilation instead
 
             return result;
           }

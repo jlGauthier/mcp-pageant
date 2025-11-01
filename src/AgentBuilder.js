@@ -70,65 +70,57 @@ The parent project is at: ../
         results.push('Could not update .gitignore: ' + e.message);
       }
 
-      // 2. Read current .claude.json
-      const claudeConfig = JSON.parse(await fs.readFile(this.claudeConfigPath, 'utf8'));
-
-      // 3. Set up project configuration
-      if (!claudeConfig.projects) {
-        claudeConfig.projects = {};
-      }
-
-      // Get MCPs to copy
+      // 2. Create .mcp.json in agent directory (project-scoped MCPs)
       const coreMcps = options.mcps || ['pageant'];
-      const projectMcps = {};
-
-      // Find a reference project that has the MCPs we need
-      const referenceProjects = Object.keys(claudeConfig.projects || {});
-      const referenceProject = referenceProjects.length > 0 ? claudeConfig.projects[referenceProjects[0]] : null;
-
-      if (referenceProject && referenceProject.mcpServers) {
-        // Copy MCPs from reference project
-        for (const mcpName of coreMcps) {
-          if (referenceProject.mcpServers[mcpName]) {
-            projectMcps[mcpName] = {
-              ...referenceProject.mcpServers[mcpName]
-            };
-            results.push(`Added MCP to agent: ${mcpName}`);
-          }
-        }
-      } else {
-        // Fallback - define them manually
-        projectMcps.pageant = {
-          type: "stdio",
-          command: path.join(this.baseDir, "server.js"),
-          args: [],
-          env: {}
-        };
-        results.push('Added MCPs with default paths');
-      }
-
-      // Set up agent project with MCPs and permissions
-      claudeConfig.projects[agentPath] = {
-        ...claudeConfig.projects[agentPath],
-        hasClaudeMdExternalIncludesApproved: true,
-        hasTrustDialogAccepted: true,
-        hasCompletedProjectOnboarding: true,
-        allowedTools: [],
-        history: [],
-        mcpContextUris: [],
-        mcpServers: projectMcps,  // MCPs go HERE!
-        enabledMcpjsonServers: [],
-        disabledMcpjsonServers: []
+      const mcpConfig = {
+        mcpServers: {}
       };
 
-      results.push(`Set permissions for: ${agentPath}`);
+      // Define MCP servers with absolute paths
+      const mcpDefinitions = {
+        pageant: {
+          type: "stdio",
+          command: "bun",
+          args: [path.join(this.baseDir, "server.js")],
+          env: {}
+        },
+        lace: {
+          type: "stdio",
+          command: "bun",
+          args: [path.join(this.baseDir, "..", "mcp_lace", "server.js")],
+          env: {}
+        },
+        selfie: {
+          type: "stdio",
+          command: "bun",
+          args: [path.join(this.baseDir, "..", "selfie", "server.js")],
+          env: {}
+        },
+        utils: {
+          type: "stdio",
+          command: "bun",
+          args: [path.join(this.baseDir, "..", "mcp_utils", "server.js")],
+          env: {}
+        }
+      };
 
-      // 5. Write updated .claude.json
+      // Add requested MCPs
+      for (const mcpName of coreMcps) {
+        if (mcpDefinitions[mcpName]) {
+          mcpConfig.mcpServers[mcpName] = mcpDefinitions[mcpName];
+          results.push(`Added MCP to agent: ${mcpName}`);
+        } else {
+          results.push(`Warning: Unknown MCP '${mcpName}', skipped`);
+        }
+      }
+
+      // Write .mcp.json to agent directory
+      const mcpJsonPath = path.join(agentPath, '.mcp.json');
       await fs.writeFile(
-        this.claudeConfigPath,
-        JSON.stringify(claudeConfig, null, 2)
+        mcpJsonPath,
+        JSON.stringify(mcpConfig, null, 2)
       );
-      results.push('Updated .claude.json with permissions');
+      results.push(`Created .mcp.json at: ${mcpJsonPath}`);
 
       // 5. Create agent-specific persona
       const personaPlanDir = path.join(
