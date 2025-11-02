@@ -376,7 +376,7 @@ export class MultiManifest {
    * Resolve a manifest-relative path to an absolute path
    * Handles various path formats:
    * - ./manifest/001_main/muse.md
-   * - ./../pageant_extension/manifest/001_main/muse.md
+   * - ./../other_manifest/manifest/001_main/muse.md
    * - 001_main/muse.md (manifest-relative)
    * Returns null if file not found in any manifest
    */
@@ -425,7 +425,7 @@ export class MultiManifest {
    * Parse a reference path to extract components
    * Handles formats like:
    * - @./manifest/001_main/file.md
-   * - @./../pageant_extension/manifest/050_story/file.md
+   * - @./../other_manifest/manifest/050_story/file.md
    * Returns: { section, subsection, filename, manifestRelative }
    */
   parsePath(refPath) {

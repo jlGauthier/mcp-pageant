@@ -4,7 +4,7 @@
 
 ## What It Does
 
-MCP Pageant builds specialized AI agents with different expertise, personalities, and knowledge bases. Deploy teams of agents that work together on complex projects - each with their own focus, conversation history, and configuration.
+MCP Pageant builds specialized AI agents with different expertise, personas, and knowledge bases. Deploy teams of agents that work together on complex projects - each with their own focus, conversation history, and configuration.
 
 **Core Capabilities:**
 - **Compose personas from modular components** - Mix technical knowledge, behavioral patterns, and communication styles
@@ -29,7 +29,7 @@ Modern development requires constantly switching contexts:
 - **DevOps Agent**: Docker, CI/CD, infrastructure
 - **Tech Writer**: Documentation, clear explanations, user guides
 
-Each agent maintains its own conversation history, technical knowledge, and personality.
+Each agent maintains its own conversation history, technical knowledge, and persona.
 
 ## Installation
 
@@ -181,7 +181,7 @@ Components are organized by **slot keys** - derived from numbered path component
 - Different slot keys → **coexist** (multiple components active)
 
 This lets you:
-- **Replace core personality** (slot 001): `agent` → `professional` → `engineer`
+- **Replace core persona** (slot 001): `agent` → `professional` → `engineer`
 - **Accumulate technical knowledge** (slot 010.X): nodejs + postgresql + docker + react
 - **Switch communication style** (slot 040.01): technical → casual → formal
 
@@ -253,27 +253,27 @@ Works with:
 1. **Full-Stack Agent** (`fs/`)
    - Handles implementation across entire stack
    - Knows: React, Node.js, PostgreSQL, Docker
-   - Personality: Pragmatic engineer
+   - Persona: Pragmatic engineer
 
 2. **QA Agent** (`qc/`)
    - Reviews code for quality issues
    - Knows: Testing strategies, edge cases, security
-   - Personality: Thorough critic
+   - Persona: Thorough critic
 
 3. **UX Agent** (`ux/`)
    - Designs user interfaces
    - Knows: CSS, accessibility, design systems
-   - Personality: Creative designer
+   - Persona: Creative designer
 
 4. **Tech Writer** (`tw/`)
    - Writes documentation
    - Knows: Technical writing, API docs
-   - Personality: Clear communicator
+   - Persona: Clear communicator
 
 5. **Tools Agent** (`tools/`)
    - Builds internal tooling
    - Knows: CLI tools, automation, scripts
-   - Personality: Efficiency focused
+   - Persona: Efficiency focused
 
 **Workflow:**
 1. FS agent implements feature
@@ -309,14 +309,14 @@ Share components across projects:
 
 ```bash
 # .env
-MANIFEST_DIRS=./manifest,../company_personas,~/personal_personas
+MANIFEST_DIRS=./manifest,../company_personas,~/user_personas
 ```
 
 **Resolution order:** Later directories override earlier ones.
 
 Use cases:
 - Company-wide shared components
-- Personal customizations
+- User-specific customizations
 - Project-specific overrides
 
 ### Temporary Modifications
@@ -397,12 +397,12 @@ You are proficient with Redis for caching and pub/sub:
 ### Solo Developer
 - **Single agent** with full-stack expertise
 - Switch between frontend/backend contexts
-- Hot-swap personality for different projects
+- Hot-swap persona for different projects
 
 ### Small Team
 - **2-3 agents:** Developer, QA, Documentation
 - Shared component library
-- Consistent personalities across team
+- Consistent personas across team
 
 ### Large Team
 - **5+ agents:** Frontend, Backend, DevOps, QA, Design, Documentation

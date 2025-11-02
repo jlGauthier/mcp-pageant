@@ -10,7 +10,7 @@ export class PersonaCore {
     return refs.sort((a, b) => {
       // Extract parts from both paths
       const parseRef = (ref) => {
-        // Handle both old format (@./manifest/) and new format (@./../pageant_extension/manifest/)
+        // Handle both local format (@./manifest/) and external format (@./../other_manifest/manifest/)
         const parts = ref.split('/');
         const manifestIndex = parts.findIndex(p => p === 'manifest' || p.includes('manifest'));
 

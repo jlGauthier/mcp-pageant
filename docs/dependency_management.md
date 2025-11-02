@@ -4,11 +4,11 @@
 The MCP Pageant system uses a dependency-based approach where manifest files can declare dependencies on other files. The behavior of these dependencies varies based on whether they target LIST directories or SLOT directories.
 
 ## CRITICAL: Multiple Manifest Directories
-**WARNING**: The dependency system currently FAILS when multiple manifest directories are configured. When using MANIFEST_DIRS with multiple paths (e.g., `./manifest,../pageant_extension/manifest`), the system treats them as a single merged structure but does NOT properly enforce SLOT exclusivity across directories.
+**WARNING**: The dependency system currently FAILS when multiple manifest directories are configured. When using MANIFEST_DIRS with multiple paths (e.g., `./manifest,../other_manifest/manifest`), the system treats them as a single merged structure but does NOT properly enforce SLOT exclusivity across directories.
 
 **Current Broken Behavior**:
 - Files from different manifest directories can occupy the same SLOT simultaneously
-- Example: `./manifest/001_main/professional.md` and `../pageant_extension/manifest/001_main/casual.md` BOTH get compiled even though 001_main is a SLOT that should only hold ONE file
+- Example: `./manifest/001_main/professional.md` and `../other_manifest/manifest/001_main/casual.md` BOTH get compiled even though 001_main is a SLOT that should only hold ONE file
 - This results in conflicting personas being merged together
 
 **Intended Behavior**:
@@ -150,14 +150,14 @@ Actual content of the file...
 
 ## Example of Correct Behavior
 
-Given MANIFEST_DIRS=`./manifest,../pageant_extension/manifest`:
+Given MANIFEST_DIRS=`./manifest,../other_manifest/manifest`:
 
 If both directories contain `001_main/`:
 - `./manifest/001_main/professional.md` exists (source manifest)
-- `../pageant_extension/manifest/001_main/agent.md` exists (extension manifest)
+- `../other_manifest/manifest/001_main/agent.md` exists (extension manifest)
 - **Result**: Only `agent.md` should be active (extension overrides source)
 
 If both directories contain `020_pattern_list/`:
 - `./manifest/020_pattern_list/clean_code.md` exists
-- `../pageant_extension/manifest/020_pattern_list/security.md` exists
+- `../other_manifest/manifest/020_pattern_list/security.md` exists
 - **Result**: BOTH files should be active (LIST accumulates)

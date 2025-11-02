@@ -4,7 +4,7 @@ import fs from 'fs/promises';
 async function testExtractDependencies() {
   const persona = new PersonaCore();
 
-  const filePath = 'D:/claudeTools/pageant_extension/manifest/050_story/turned_hot/learning_from_the_hub.md';
+  const filePath = 'D:/claudeTools/mcp_pageant/manifest/020_pattern/02_long_term_outlook.md';
 
   console.log('Testing extractDependencies on actual file...\n');
   console.log(`File: ${filePath}\n`);

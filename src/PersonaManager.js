@@ -3,7 +3,7 @@ import path from 'path';
 import { PersonaCore } from './persona-core.js';
 import { MultiManifest } from './MultiManifest.js';
 import { FuzzyMatch } from './FuzzyMatch.js';
-import { formatMarkdown } from './formatMarkdown.js';
+import { formatMarkdown, formatWithContext } from './formatMarkdown.js';
 export class PersonaManager extends PersonaCore {
   // Delegate to FuzzyMatch for consistency
   fuzzyMatch(options, search) {
@@ -138,8 +138,8 @@ export class PersonaManager extends PersonaCore {
 
       await fs.writeFile(claudeLocalPath, content, 'utf8');
     } catch (error) {
-      // File doesn't exist yet, will be created during compile
-      // We'll add the ID during compilation
+      console.error('Error writing PAGEANT_ID:', error);
+      throw error;
     }
   }
 
@@ -392,134 +392,6 @@ export class PersonaManager extends PersonaCore {
     await fs.writeFile(templatePath, cleanTemplate, 'utf8');
   }
 
-  toTitleCase(str) {
-    return str.replace(/[_-]/g, ' ')
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-  }
-
-  formatWithContext(fileDataList) {
-    let lastSlot = '';
-    let output = '';
-
-    for (let i = 0; i < fileDataList.length; i++) {
-      const current = fileDataList[i];
-      const nextSlot = i < fileDataList.length - 1 ? fileDataList[i + 1][0] : null;
-
-      if (i !== 0) output += '\n\n';
-
-      output += this.determineHeader(lastSlot, current, nextSlot);
-      output += this.determineContent(current);
-
-      lastSlot = current[0];
-    }
-
-    return output;
-  }
-
-  determineContent(current) {
-    return current[3]; // Just return the cleaned content
-  }
-
-  determineHeader(lastSlot, current, nextSlot) {
-    const slot = current[0];
-    const fullPath = current[1];
-    const filename = current[2];
-    const content = current[3];
-
-    const depth = slot ? slot.split('.').length : 0;
-
-    // Check if this is a virtual path (inline override) or in a numbered slot directory
-    const isVirtualPath = !fullPath.includes('manifest') && fullPath.includes('/');
-    const pathHasNumberedDir = /\/\d+[_-]/.test(fullPath); // Check if path contains numbered directory
-    const fileIsNumbered = /^\d+[_-]/.test(path.basename(fullPath));
-
-    // For virtual paths and files in numbered directories, get clean name and prepend slot name
-    let headerName;
-    if (isVirtualPath || pathHasNumberedDir) {
-      const cleanFilename = fileIsNumbered ? filename.replace(/^\d+[_-]/, '') : filename;
-      const slotName = this.getSlotName(fullPath);
-      if (slotName) {
-        headerName = `${slotName}: ${this.toTitleCase(cleanFilename)}`;
-      } else {
-        headerName = this.toTitleCase(cleanFilename);
-      }
-    } else {
-      // Non-slot files just use filename
-      headerName = this.toTitleCase(filename);
-    }
-
-    // Check if section is changing
-    if (this.sectionChange(lastSlot, slot)) {
-      const sectionName = this.getSectionName(fullPath);
-
-      // Check if we're the only file in this section
-      if (this.sectionChange(slot, nextSlot)) {
-        // We're the only content for this section - combine section + header
-        return `# ${sectionName}: ${headerName}\n`;
-      }
-
-      if (depth !== 1) {
-        // We're in depth 2+ (subsection) with more files coming
-        return `# ${sectionName}\n\n## ${headerName}\n`;
-      } else {
-        // Depth 1 - top level section with more files coming
-        return `# ${sectionName}\n\n## ${headerName}\n`;
-      }
-    }
-
-    // No section change - just add subsection header
-    return `## ${headerName}\n`;
-  }
-
-  getSlotName(fullPath) {
-    // Extract the numbered directory name from path
-    // e.g., "manifest/040_output/01_dialect/file.md" -> "Dialect"
-    // For virtual paths: "output/tone/name" -> "Tone"
-    const pathParts = fullPath.split('/');
-    const manifestIdx = pathParts.indexOf('manifest');
-
-    if (manifestIdx >= 0 && manifestIdx + 2 < pathParts.length) {
-      const subsectionDir = pathParts[manifestIdx + 2];
-      if (/^\d+[_-]/.test(subsectionDir)) {
-        return this.toTitleCase(subsectionDir.replace(/^\d+[_-]/, ''));
-      }
-    }
-
-    // Handle virtual paths (e.g., output/tone/name -> Tone)
-    if (pathParts.length >= 2 && !fullPath.includes('manifest')) {
-      const subsection = pathParts[pathParts.length - 2];
-      return this.toTitleCase(subsection);
-    }
-
-    return null;
-  }
-
-  getSectionName(fullPath) {
-    // Extract section name from path
-    // e.g., "./manifest/001_main/file.md" -> "Main"
-    const pathParts = fullPath.split('/');
-    const manifestIdx = pathParts.indexOf('manifest');
-
-    if (manifestIdx >= 0 && manifestIdx + 1 < pathParts.length) {
-      const sectionDir = pathParts[manifestIdx + 1];
-      return this.toTitleCase(sectionDir.replace(/^\d{3}[_-]/, ''));
-    }
-
-    return 'Unknown';
-  }
-
-  sectionChange(slotA, slotB) {
-    if (!slotA || !slotB) return true;
-
-    // Compare first component of slot keys
-    const partsA = slotA.split('.');
-    const partsB = slotB.split('.');
-
-    return partsA[0] !== partsB[0];
-  }
-
   formatCompiledContent(content) {
     const lines = content.split('\n');
     const formatted = [];
@@ -764,33 +636,15 @@ export class PersonaManager extends PersonaCore {
           let content = await fs.readFile(filePath, 'utf8');
           content = this.substituteVariables(content);
 
-          // Remove dependency lines and the first # header
+          // Remove dependency lines only
           const contentLines = content.split('\n');
           const cleanLines = [];
-          let skippedFirstHeader = false;
 
-          for (let i = 0; i < contentLines.length; i++) {
-            const cLine = contentLines[i];
-
+          for (const cLine of contentLines) {
             if (cLine.trim().startsWith('@')) {
               continue;
             }
-
-            if (!skippedFirstHeader && cLine.match(/^#+\s+/)) {
-              skippedFirstHeader = true;
-              while (i + 1 < contentLines.length && contentLines[i + 1].trim() === '') {
-                i++;
-              }
-              continue;
-            }
-
-            // Demote all remaining headers by one level (add one #)
-            const headerMatch = cLine.match(/^(#+)(\s+.+)$/);
-            if (headerMatch) {
-              cleanLines.push(`#${headerMatch[1]}${headerMatch[2]}`);
-            } else {
-              cleanLines.push(cLine);
-            }
+            cleanLines.push(cLine);
           }
 
           const cleanedContent = cleanLines.join('\n').trim();
@@ -806,7 +660,7 @@ export class PersonaManager extends PersonaCore {
     }
 
     // PHASE 2: Format with look-ahead context
-    const formatted = this.formatWithContext(fileDataList);
+    const formatted = await formatWithContext(fileDataList, this.multiManifest);
 
     return { formatted, expiredSlots };
   }
@@ -846,6 +700,9 @@ export class PersonaManager extends PersonaCore {
 
       // Write the formatted persona directly to CLAUDE.local.md for real-time updates
       await fs.writeFile(claudeLocalPath, formattedContent);
+
+      // Add PAGEANT_ID to CLAUDE.local.md
+      await this.writePageantId(this.projectDirName);
 
       return true;
     } catch (error) {

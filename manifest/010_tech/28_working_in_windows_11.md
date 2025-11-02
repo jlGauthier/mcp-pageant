@@ -1,47 +1,30 @@
-# Windows Git Bash Commands - D:\claudeTools
+# Windows 11
 
-## Directory Operations
 ```bash
-mkdir test_dir                  # Create directory
-mkdir -p subdir/nested          # Create nested directories
-cd /d/claudeTools/test          # Navigate with forward slashes
-ls -la                          # List contents with details
-rm -rf dir_with_contents        # Remove directory and contents
+# Directories
+mkdir test_dir
+mkdir -p subdir/nested
+cd /d/claudeTools/test
+ls -la
+rm -rf dir_with_contents
+
+# Files
+echo "content" > file.txt
+touch empty.txt
+cp source.txt dest.txt
+mv oldname.txt newname.txt
+rm file.txt
+
+# Search
+find . -name "*.txt"
+grep "pattern" file.txt
+grep -r "pattern" directory/
+grep -i "case_insensitive"
+
+# Processes
+ps aux | grep node
+kill 1234
+kill -9 1234
 ```
 
-## File Operations
-```bash
-echo "content" > file.txt       # Create file with content
-touch empty.txt                 # Create empty file
-cp source.txt dest.txt          # Copy file
-mv oldname.txt newname.txt      # Rename/move file
-rm file.txt                     # Delete file
-cat file.txt                    # View file
-```
-
-## Search Operations
-```bash
-find . -name "*.txt"            # Find files by pattern
-grep "pattern" file.txt         # Search in file
-grep -r "pattern" directory/    # Recursive search
-grep -i "case_insensitive"      # Case insensitive
-```
-
-## Process Operations
-```bash
-ps aux | grep node              # Find processes
-kill 1234                       # Kill by PID
-kill -9 1234                    # Force kill
-```
-
-## Path Format
-- Use forward slashes: `/d/claudeTools`
-- Or relative paths: `subdir/file.txt`
-- Avoid backslashes: `D:\test` creates mangled names
-
-## Windows-Specific Commands
-```bash
-cmd /c "tasklist"               # Windows task list
-cmd /c "ipconfig"               # Network info
-pwd                             # Current directory
-```
+**Bug Workaround:** Use absolute Windows paths (D:\...) for file operations to avoid modification bug. https://github.com/anthropics/claude-code/issues/7443
