@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('No Duplicate Headers', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should NOT have duplicate Main headers', async () => {
@@ -24,7 +25,7 @@ describe('No Duplicate Headers', () => {
       ['001', './manifest/001_main/agent.md', 'agent.md', '## Core Identity\n\nContent here...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Should have exactly ONE occurrence of "# Main"
     const mainHeaderMatches = formatted.match(/^# Main/gm);
@@ -45,7 +46,7 @@ describe('No Duplicate Headers', () => {
        '## MCP Configuration\n\nContent...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Should have section header
     expect(formatted).toContain('# Tech');

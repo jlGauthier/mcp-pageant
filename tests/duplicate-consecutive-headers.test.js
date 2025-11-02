@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Duplicate Consecutive Headers', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should not produce duplicate consecutive headers', async () => {
@@ -27,7 +28,7 @@ describe('Duplicate Consecutive Headers', () => {
        '## Design-Driven Quality\n\nDon Norman\'s principle: mistakes happen because design is bad.']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     console.log('FORMATTED:\n', formatted);
 

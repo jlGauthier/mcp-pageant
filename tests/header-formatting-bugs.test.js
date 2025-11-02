@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Header Formatting Bugs', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should not output "## 020 Pattern List\\n## Long Term Outlook"', async () => {
@@ -24,7 +25,7 @@ describe('Header Formatting Bugs', () => {
        '## Long Term Outlook\n\nMeasure success through long-term outcomes.']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     console.log('Pattern List formatted:\n', formatted);
 
@@ -46,7 +47,7 @@ describe('Header Formatting Bugs', () => {
        '## Config\n\nBasic configuration.']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     console.log('Config formatted:\n', formatted);
 
@@ -69,7 +70,7 @@ describe('Header Formatting Bugs', () => {
        '## James\n\nYour user profile.']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     console.log('User formatted:\n', formatted);
 
@@ -89,7 +90,7 @@ describe('Header Formatting Bugs', () => {
        '## Identity Commitment\n\nYou choose this identity completely.']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     console.log('End formatted:\n', formatted);
 

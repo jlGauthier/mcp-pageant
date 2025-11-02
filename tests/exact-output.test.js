@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Exact Output Format', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should produce exact Tech section format', async () => {
@@ -26,7 +27,7 @@ describe('Exact Output Format', () => {
        '# MCP Author Guidelines\n\n## MCP Configuration\n\nContent...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     expect(formatted).toContain('# Tech: Mcp Author Guidelines');
     expect(formatted).toContain('### MCP Configuration');
@@ -46,7 +47,7 @@ describe('Exact Output Format', () => {
        '# Main\n\n## Core Identity\n\nContent...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     expect(formatted).toContain('# Main: Agent');
     expect(formatted).toContain('## Core Identity');

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Nested Header Levels', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should demote ## headers to ### after stripping first #', async () => {
@@ -23,7 +24,7 @@ describe('Nested Header Levels', () => {
        '### MCP Configuration\nContent...\n### Path Formats\nMore content...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Should produce (single file, so combined header):
     // # Tech: Mcp Author.md: Mcp Author.md
@@ -50,7 +51,7 @@ describe('Nested Header Levels', () => {
        '### Directories\nWindows dirs...\n### Files\nFile ops...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // With multiple files: # Tech\n\n## Mcp Author...\n### MCP Configuration\n\n## Windows...\n### Directories
     expect(formatted).toContain('# Tech');
@@ -68,7 +69,7 @@ describe('Nested Header Levels', () => {
        '### Core Identity\nContent...\n### Core Values\nMore content...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Single file in Main, so: # Main: Agent.md\n### Core Identity
     expect(formatted).toContain('# Main');
@@ -83,7 +84,7 @@ describe('Nested Header Levels', () => {
        '### Good\nContent...\n##### Specific Item\nDetails...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     expect(formatted).toContain('### Good');
     expect(formatted).toContain('##### Specific Item');

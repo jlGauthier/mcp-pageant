@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { PersonaManager } from '../src/PersonaManager.js';
 
 describe('parseInlineOverride', () => {
-  const manager = new PersonaManager('/d/claudeTools/mcp_pageant');
+  const manager = new PersonaManager('/d/claudeTools/mcp_pageant', { testMode: true });
 
   it('should parse basic inline override without expiration', () => {
     const line = '040.01 - output/dialect/friendly: Warm conversational tone';

@@ -41,7 +41,7 @@ Each agent maintains its own conversation history, technical knowledge, and pers
 
 ```bash
 # Clone pageant server
-git clone https://github.com/jlowin/mcp_pageant.git
+git clone https://github.com/jlGauthier/mcp_pageant.git
 cd mcp_pageant
 npm install
 ```

@@ -1,6 +1,6 @@
 import { describe, it, beforeEach } from 'vitest';
 import { expect } from 'vitest';
-import { PersonaManager } from '../src/PersonaManager.js';
+import { MultiManifest } from '../src/MultiManifest.js';
 import { formatWithContext } from '../src/formatMarkdown.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -8,11 +8,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Header Levels', () => {
-  let pm;
+  let multiManifest;
 
   beforeEach(() => {
     const baseDir = path.join(__dirname, '..');
-    pm = new PersonaManager(baseDir);
+    const manifestDirs = [path.join(baseDir, 'manifest')];
+    multiManifest = new MultiManifest(manifestDirs);
   });
 
   it('should use ## headers for subsections under # Main', async () => {
@@ -23,7 +24,7 @@ describe('Header Levels', () => {
       ['001', './manifest/001_main/agent.md', 'agent.md', '## Core Identity\nContent here...\n## Core Values\nMore content...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Single file produces combined header
     expect(formatted).toContain('# Main: Agent');
@@ -41,7 +42,7 @@ describe('Header Levels', () => {
       ['010.15', './manifest/010_tech/15_mcp_author.md', '15_mcp_author.md', 'Content without headers...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     expect(formatted).toContain('# Tech: Mcp Author');
     expect(formatted).not.toContain('### Mcp Author');
@@ -54,7 +55,7 @@ describe('Header Levels', () => {
       ['040.02', './manifest/040_output/02_narration/tactile.md', 'tactile.md', 'Narration content...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     expect(formatted).toContain('# Output');
     expect(formatted).toContain('## Dialect: Technical');
@@ -69,7 +70,7 @@ describe('Header Levels', () => {
       ['001', './manifest/001_main/agent.md', 'agent.md', 'Content without headers...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Should be: # Main: Agent (combined)
     expect(formatted).toContain('# Main: Agent');
@@ -82,7 +83,7 @@ describe('Header Levels', () => {
       ['040.01', './manifest/040_output/01_dialect/file.md', 'file.md', 'Text content...']
     ];
 
-    const formatted = await formatWithContext(fileDataList, pm.multiManifest);
+    const formatted = await formatWithContext(fileDataList, multiManifest);
 
     // Should be: # Output: Dialect: File (combined)
     expect(formatted).toContain('# Output: Dialect: File');

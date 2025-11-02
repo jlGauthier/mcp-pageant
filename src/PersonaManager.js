@@ -11,9 +11,10 @@ export class PersonaManager extends PersonaCore {
     return result || ''; // Return empty string instead of null for backward compatibility
   }
 
-  constructor(baseDir) {
+  constructor(baseDir, options = {}) {
     super();
     this.baseDir = baseDir; // .
+    this.testMode = options.testMode || false; // Skip PAGEANT_ID writes in test mode
 
     // Load configuration from environment
     this.plansDir = process.env.PLANS_DIR ?
@@ -120,6 +121,10 @@ export class PersonaManager extends PersonaCore {
 
   // Write PAGEANT_ID to CLAUDE.local.md
   async writePageantId(id) {
+    if (this.testMode) {
+      return; // Skip writes in test mode
+    }
+
     const claudeLocalPath = path.join(process.cwd(), 'CLAUDE.local.md');
     try {
       let content = await fs.readFile(claudeLocalPath, 'utf8');
