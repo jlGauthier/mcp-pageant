@@ -143,6 +143,11 @@ export class PersonaManager extends PersonaCore {
 
       await fs.writeFile(claudeLocalPath, content, 'utf8');
     } catch (error) {
+      if (error.code === 'ENOENT') {
+        // CLAUDE.local.md doesn't exist - skip write silently
+        // This happens when PersonaManager runs in non-agent directories (e.g., MCP server itself)
+        return;
+      }
       console.error('Error writing PAGEANT_ID:', error);
       throw error;
     }
