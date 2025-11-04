@@ -1,3 +1,5 @@
+bun.lock
+
 # Dependencies
 node_modules/
 

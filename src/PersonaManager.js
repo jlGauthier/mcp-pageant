@@ -98,11 +98,26 @@ export class PersonaManager extends PersonaCore {
   }
   // Generate lowercase path-based ID from a directory path
   generatePathId(projectPath) {
-    const pathParts = projectPath
-      .toLowerCase()
-      .replace(/^[a-z]:/, (match) => match[0])
-      .split(/[\\\/]/)
+    const isWindows = process.platform === 'win32';
+    let normalizedPath = projectPath.toLowerCase();
+
+    if (isWindows) {
+      // Windows: C:\Users\name -> c--users--name
+      normalizedPath = normalizedPath
+        .replace(/^([a-z]):/, '$1') // Remove colon from drive letter
+        .replace(/\\/g, path.sep); // Normalize backslashes
+    } else {
+      // Unix: /Users/name -> users--name
+      // Remove leading slash as it creates empty string in split
+      if (normalizedPath.startsWith('/')) {
+        normalizedPath = normalizedPath.substring(1);
+      }
+    }
+
+    const pathParts = normalizedPath
+      .split(path.sep)
       .filter(part => part.length > 0);
+
     return pathParts.join('--');
   }
 
@@ -772,8 +787,8 @@ export class PersonaManager extends PersonaCore {
             if (subFiles.length > 0) {
               const randomFile = subFiles[Math.floor(Math.random() * subFiles.length)];
 
-              // Build reference path
-              const relativePath = path.relative(this.baseDir, randomFile.path).replace(/\\/g, '/');
+              // Build reference path (always use forward slashes for cross-platform compatibility)
+              const relativePath = path.relative(this.baseDir, randomFile.path).split(path.sep).join('/');
               const newReference = `@./${relativePath}`;
 
               // Add to template
@@ -816,8 +831,8 @@ export class PersonaManager extends PersonaCore {
       matchedSubsection = fileInfo.subsection.split(/[\/\\]/)[0]; // Get top-level subsection
     }
 
-    // Build reference path
-    const relativePath = path.relative(this.baseDir, fileInfo.path).replace(/\\/g, '/');
+    // Build reference path (always use forward slashes for cross-platform compatibility)
+    const relativePath = path.relative(this.baseDir, fileInfo.path).split(path.sep).join('/');
     const newReference = `@./${relativePath}`;
 
     // Extract dependencies using MultiManifest
@@ -826,7 +841,7 @@ export class PersonaManager extends PersonaCore {
     // Convert to reference paths relative to base, preserving override flag
     const allDependencies = [];
     for (const dep of deps) {
-      const relativePath = path.relative(this.baseDir, dep.absolutePath).replace(/\\/g, '/');
+      const relativePath = path.relative(this.baseDir, dep.absolutePath).split(path.sep).join('/');
       allDependencies.push({
         path: `./${relativePath}`,
         isOverride: dep.isOverride || false
@@ -863,7 +878,7 @@ export class PersonaManager extends PersonaCore {
 
               // Remove each old dependency's slot (with correct override flag)
               for (const oldDep of oldDeps) {
-                const oldDepPath = path.relative(this.baseDir, oldDep.absolutePath).replace(/\\/g, '/');
+                const oldDepPath = path.relative(this.baseDir, oldDep.absolutePath).split(path.sep).join('/');
                 const oldDepSlotKey = this.getSlotKey(oldDepPath, oldDep.isOverride || false);
 
                 if (oldDepSlotKey) {
@@ -1090,7 +1105,7 @@ export class PersonaManager extends PersonaCore {
         const deps = await this.multiManifest.extractDependencies(absolutePath);
 
         for (const dep of deps) {
-          const depPath = path.relative(this.baseDir, dep.absolutePath).replace(/\\/g, '/');
+          const depPath = path.relative(this.baseDir, dep.absolutePath).split(path.sep).join('/');
           const depSlotKey = this.getSlotKey(depPath, dep.isOverride || false);
 
           if (depSlotKey) {

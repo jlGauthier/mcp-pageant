@@ -8,7 +8,9 @@ const execAsync = promisify(exec);
 export class AgentBuilder {
   constructor(baseDir) {
     this.baseDir = baseDir;
-    this.claudeConfigPath = path.join(process.env.USERPROFILE || process.env.HOME, '.claude.json');
+    // Use HOME for both macOS/Linux and USERPROFILE for Windows
+    const homeDir = process.env.HOME || process.env.USERPROFILE;
+    this.claudeConfigPath = path.join(homeDir, '.claude.json');
   }
 
   async buildAgent(agentName, options = {}) {
@@ -139,8 +141,8 @@ The parent project is at: ../
       // 6. Create CLAUDE.md for the agent
       const mainProjectClaudePath = path.join(projectPath, 'CLAUDE.md');
       const pageantContextPath = path.join(pageantDir, 'CLAUDE.md');
-      const mainRelativePath = path.relative(agentPath, mainProjectClaudePath).replace(/\\/g, '/');
-      const pageantRelativePath = path.relative(agentPath, pageantContextPath).replace(/\\/g, '/');
+      const mainRelativePath = path.relative(agentPath, mainProjectClaudePath).split(path.sep).join('/');
+      const pageantRelativePath = path.relative(agentPath, pageantContextPath).split(path.sep).join('/');
 
       const claudeMdContent = `# Agent: ${agentName}
 
@@ -171,7 +173,7 @@ This agent specializes in ${agentName} tasks as part of the ${projectName} team.
       const relativePersonaPath = path.relative(
         agentPath,
         path.join(personaPlanDir, 'persona.md')
-      ).replace(/\\/g, '/');
+      ).split(path.sep).join('/');
 
       await fs.writeFile(
         path.join(agentPath, 'CLAUDE.local.md'),
@@ -199,6 +201,8 @@ This agent specializes in ${agentName} tasks as part of the ${projectName} team.
   }
 
   getLightPersonaTemplate(agentName) {
+    // Template paths are relative to the plans directory where template.md lives
+    // PersonaManager will resolve these from its baseDir (repo root)
     return `# ${agentName} Agent Configuration
 
 @./manifest/001_main/agent.md
@@ -209,9 +213,27 @@ This agent specializes in ${agentName} tasks as part of the ${projectName} team.
   }
 
   getProjectDirName(projectPath) {
-    const pathParts = projectPath.replace(/^[A-Z]:/, (match) => match[0])
-      .split(/[\\\/]/)
+    // Must match PersonaManager.generatePathId() - lowercase for case-insensitive consistency
+    const isWindows = process.platform === 'win32';
+    let normalizedPath = projectPath.toLowerCase();
+
+    if (isWindows) {
+      // Windows: C:\Users\name -> c--users--name
+      normalizedPath = normalizedPath
+        .replace(/^([a-z]):/, '$1') // Remove colon from drive letter
+        .replace(/\\/g, path.sep); // Normalize backslashes
+    } else {
+      // Unix: /Users/name -> users--name
+      // Remove leading slash as it creates empty string in split
+      if (normalizedPath.startsWith('/')) {
+        normalizedPath = normalizedPath.substring(1);
+      }
+    }
+
+    const pathParts = normalizedPath
+      .split(path.sep)
       .filter(part => part.length > 0);
+
     return pathParts.join('--');
   }
 

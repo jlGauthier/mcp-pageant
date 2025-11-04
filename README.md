@@ -34,7 +34,7 @@ Each agent maintains its own conversation history, technical knowledge, and pers
 ## Installation
 
 ### Prerequisites
-- Node.js 18+ or Bun 1.0+
+- Bun 1.0+
 - Claude Code (desktop application)
 
 ### Setup
@@ -43,7 +43,7 @@ Each agent maintains its own conversation history, technical knowledge, and pers
 # Clone pageant server
 git clone https://github.com/jlGauthier/mcp_pageant.git
 cd mcp_pageant
-npm install
+bun install
 ```
 
 **Install the MCP server globally:**
