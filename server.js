@@ -16,6 +16,7 @@ import fs from 'fs/promises';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
 import { AgentBuilder } from './src/AgentBuilder.js';
+import { TeamDeployer } from './src/TeamDeployer.js';
 
 class PersonaServer {
   constructor() {
@@ -24,6 +25,7 @@ class PersonaServer {
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
     this.webEditor = new WebEditor(this.manager);
     this.agentBuilder = new AgentBuilder(__dirname);
+    this.teamDeployer = new TeamDeployer(__dirname);
 
     this.variableNames = [];
     this.toolHints = {};
@@ -536,6 +538,43 @@ Usage notes:
               required: ['name']
             }
           },
+          {
+            name: 'list_teams',
+            description: `Lists available team templates that can be deployed.
+
+Usage notes:
+- Returns all team templates available in the team-templates directory
+- Each template is a pre-configured set of specialized agents ready to deploy`,
+            inputSchema: {
+              type: 'object',
+              properties: {},
+              required: []
+            }
+          },
+          {
+            name: 'deploy_team',
+            description: `Deploys a complete team of specialized agents to your project.
+
+Usage notes:
+- Copies pre-configured agent directories from template to .pageant/
+- Each agent gets a unique ID and compiled persona
+- Automatically adds .pageant to .gitignore
+- Run 'launch-team.ps1' after deployment to start all agents in Windows Terminal tabs`,
+            inputSchema: {
+              type: 'object',
+              properties: {
+                template: {
+                  type: 'string',
+                  description: 'Name of the team template to deploy (use list_teams to see available templates)'
+                },
+                project_path: {
+                  type: 'string',
+                  description: 'Path to project directory (defaults to current working directory)'
+                }
+              },
+              required: ['template']
+            }
+          },
           ...this.customTools.map(tool => {
             let description = tool.description;
 
@@ -677,6 +716,31 @@ Usage notes:
                   text: buildResult.success
                     ? `Agent '${args.name}' created successfully!\n\nPath: ${buildResult.agentPath}\n\nSteps completed:\n${buildResult.results.join('\n')}`
                     : `Failed to create agent: ${buildResult.error}\n\nPartial progress:\n${buildResult.results.join('\n')}`,
+                },
+              ],
+            };
+          case 'list_teams':
+            const templates = await this.teamDeployer.listTemplates();
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: templates.length > 0
+                    ? `Available team templates:\n\n${templates.map(t => `- ${t}`).join('\n')}\n\nUse deploy_team to deploy a template to your project.`
+                    : 'No team templates found in team-templates directory.',
+                },
+              ],
+            };
+          case 'deploy_team':
+            const projectPath = args.project_path || process.cwd();
+            const deployResult = await this.teamDeployer.deployTeam(args.template, projectPath);
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: deployResult.success
+                    ? `Team '${args.template}' deployed successfully!\n\nAgents deployed: ${deployResult.agents.join(', ')}\nLocation: ${deployResult.deployPath}\n\nSteps completed:\n${deployResult.results.join('\n')}\n\nNext: Run 'launch-team.ps1' from ${projectPath} to start all agents.`
+                    : `Failed to deploy team:\n${deployResult.errors.join('\n')}\n\nPartial progress:\n${deployResult.results.join('\n')}`,
                 },
               ],
             };

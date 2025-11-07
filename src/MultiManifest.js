@@ -221,71 +221,56 @@ export class MultiManifest {
   }
 
   /**
-   * List all sections across all manifest directories
-   * Extensions can add new sections to main
+   * Internal helper: List directories at a given relative path across all manifests
+   * @param {string} relativePath - Path relative to manifest root (empty for sections)
+   * @returns {Array} Array of {name, manifestDirs[], manifestIndices[]}
    */
-  async listSections() {
-    const sectionsMap = new Map();
+  async _listDirectoriesAtPath(relativePath = '') {
+    const dirMap = new Map();
 
     for (let i = 0; i < this.manifestDirs.length; i++) {
       const manifestDir = this.manifestDirs[i];
 
       try {
-        const entries = await fs.readdir(manifestDir, { withFileTypes: true });
+        const targetPath = relativePath
+          ? path.join(manifestDir, relativePath)
+          : manifestDir;
+        const entries = await fs.readdir(targetPath, { withFileTypes: true });
 
         for (const entry of entries) {
           if (entry.isDirectory() && !entry.name.startsWith('.')) {
-            if (!sectionsMap.has(entry.name)) {
-              sectionsMap.set(entry.name, {
+            if (!dirMap.has(entry.name)) {
+              dirMap.set(entry.name, {
                 name: entry.name,
                 manifestDirs: [],
                 manifestIndices: []
               });
             }
-            sectionsMap.get(entry.name).manifestDirs.push(manifestDir);
-            sectionsMap.get(entry.name).manifestIndices.push(i);
+            dirMap.get(entry.name).manifestDirs.push(manifestDir);
+            dirMap.get(entry.name).manifestIndices.push(i);
           }
         }
       } catch {
-        // Directory doesn't exist - normal
+        // Directory doesn't exist in this manifest - normal
       }
     }
 
-    return Array.from(sectionsMap.values());
+    return Array.from(dirMap.values());
+  }
+
+  /**
+   * List all sections across all manifest directories
+   * Extensions can add new sections to main
+   */
+  async listSections() {
+    return this._listDirectoriesAtPath('');
   }
 
   /**
    * List subsections for a given section
    */
   async listSubsections(section) {
-    const subsectionsMap = new Map();
-
-    for (let i = 0; i < this.manifestDirs.length; i++) {
-      const manifestDir = this.manifestDirs[i];
-
-      try {
-        const sectionPath = path.join(manifestDir, section);
-        const entries = await fs.readdir(sectionPath, { withFileTypes: true });
-
-        for (const entry of entries) {
-          if (entry.isDirectory() && !entry.name.startsWith('.')) {
-            if (!subsectionsMap.has(entry.name)) {
-              subsectionsMap.set(entry.name, {
-                name: entry.name,
-                manifestDirs: [],
-                manifestIndices: []
-              });
-            }
-            subsectionsMap.get(entry.name).manifestDirs.push(manifestDir);
-            subsectionsMap.get(entry.name).manifestIndices.push(i);
-          }
-        }
-      } catch {
-        // Section doesn't exist in this manifest - normal
-      }
-    }
-
-    return Array.from(subsectionsMap.values());
+    return this._listDirectoriesAtPath(section);
   }
 
   /**
