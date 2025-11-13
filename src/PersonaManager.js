@@ -66,14 +66,37 @@ export class PersonaManager extends PersonaCore {
       // Plans default_vars.txt is optional
     }
 
-    // Finally override with project-specific vars if they exist
+    // Finally override with project-specific vars from template.md
     try {
-      const projectVarsPath = path.join(this.plansDir, this.getProjectDirName(), 'vars.txt');
-      const projectContent = await fs.readFile(projectVarsPath, 'utf8');
-      this.parseVariables(projectContent);
+      const templatePath = this.getTemplatePath();
+      const templateContent = await fs.readFile(templatePath, 'utf8');
+      const templateVars = this.extractVariablesFromTemplate(templateContent);
+      this.parseVariables(templateVars);
     } catch (error) {
-      // Project vars are optional, no warning needed
+      // Template vars are optional, no warning needed
     }
+  }
+
+  extractVariablesFromTemplate(templateContent) {
+    // Extract variables from top of template (before first @ line)
+    const lines = templateContent.split('\n');
+    const varLines = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('@')) {
+        // Hit first reference, stop parsing vars
+        break;
+      }
+      if (trimmed && !trimmed.startsWith('#')) {
+        // Could be a variable line
+        if (trimmed.includes('=')) {
+          varLines.push(line);
+        }
+      }
+    }
+
+    return varLines.join('\n');
   }
   
   parseVariables(content) {
@@ -481,7 +504,23 @@ export class PersonaManager extends PersonaCore {
 
       if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
         const isOverride = trimmed.startsWith('@@');
-        const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+        let refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+
+        // Check for expiration metadata [expires:timestamp]
+        const expiresMatch = refPath.match(/^(.+?)\s+\[expires:(\d+)\]$/);
+        if (expiresMatch) {
+          const expiresAt = parseInt(expiresMatch[2], 10);
+          if (Date.now() > expiresAt) {
+            // Expired - mark for removal
+            const slotKey = this.getSlotKey(expiresMatch[1], isOverride);
+            if (slotKey) {
+              expiredSlots.push(slotKey);
+            }
+            continue;
+          }
+          // Not expired - strip expiration metadata and continue
+          refPath = expiresMatch[1];
+        }
 
         if (refPath.endsWith('/')) {
           continue;
@@ -779,6 +818,73 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
+  /**
+   * Adds a component as a temporary inline override with expiration.
+   * Used for duration-based component adds.
+   * @param {Object} params - { section, subsection, partial, slotKey, expiresAt }
+   * @returns {Object} MCP response
+   */
+  async handleTemporaryAdd({ section, subsection, partial, slotKey, expiresAt }) {
+    const projectPath = process.cwd();
+
+    // Use handleAdd logic to resolve and find the file
+    const sections = await this.multiManifest.listSections();
+    const sectionNames = sections.map(s => s.name);
+
+    let matchedSection = sectionNames.find(s => s === section);
+    if (!matchedSection) {
+      matchedSection = this.fuzzyMatch(sectionNames, section);
+      if (!matchedSection) {
+        throw new Error(`No section matching '${section}' found. Available: ${sectionNames.join(', ')}`);
+      }
+    }
+
+    let matchedSubsection = subsection;
+    if (subsection) {
+      const subsections = await this.multiManifest.listSubsections(matchedSection);
+      const subsectionNames = subsections.map(s => s.name);
+      matchedSubsection = this.fuzzyMatch(subsectionNames, subsection);
+
+      if (!matchedSubsection) {
+        throw new Error(`No subsection matching '${subsection}' found in ${matchedSection}`);
+      }
+    }
+
+    // Find the file
+    const fileInfo = await this.multiManifest.findFile(matchedSection, matchedSubsection, partial);
+    if (!fileInfo) {
+      throw new Error(`No file matching '${partial}' found in ${matchedSection}${matchedSubsection ? '/' + matchedSubsection : ''}`);
+    }
+
+    // For files with duration, add as override reference with expiration tracking
+    const templatePath = this.getTemplatePath();
+
+    // Build reference path
+    const relativePath = path.relative(this.baseDir, fileInfo.path).replace(/\\/g, '/');
+
+    // Add expiration metadata as comment before the reference
+    const expiresPart = expiresAt ? ` [expires:${expiresAt}]` : '';
+    const overrideRef = `@@${relativePath}${expiresPart}`;
+
+    // Remove any existing component in this slot
+    await this.removeSlotByKey(templatePath, `${slotKey}.override`);
+
+    // Add the override reference to template
+    await this.addReferenceToTemplate(templatePath, overrideRef);
+
+    // Compile the persona
+    await this.compilePersona(projectPath);
+
+    const fileName = path.basename(fileInfo.path, '.md');
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Added "${fileName}" as override with expiration and compiled persona.`
+      }]
+    };
+  }
+
   async removeSlotByKey(templatePath, slotKey) {
     // Read current template
     let template = '';
@@ -869,25 +975,47 @@ export class PersonaManager extends PersonaCore {
 
     if (partial) {
       // Find specific file or inline override by partial name in template
+      // Build list of candidates with fuzzy scores
+      const candidates = [];
+
       for (const line of lines) {
         const trimmed = line.trim();
 
         // Check inline overrides
         const inlineOverride = this.parseInlineOverride(trimmed);
-        if (inlineOverride && !inlineOverride.expired && inlineOverride.virtualPath.includes(partial)) {
-          filesToRemove.push(trimmed);
-          break;
+        if (inlineOverride && !inlineOverride.expired) {
+          // Extract just the filename from virtual path for matching
+          const filename = path.basename(inlineOverride.virtualPath, '.md');
+          const cleanedPartial = FuzzyMatch.clean(partial);
+          const score = FuzzyMatch.score(filename, cleanedPartial);
+          if (score > 0.3) {
+            candidates.push({ line: trimmed, score, matchTarget: filename });
+          }
         }
 
         // Check file references
-        if ((trimmed.startsWith('@@') || trimmed.startsWith('@')) && trimmed.includes(partial)) {
-          filesToRemove.push(trimmed);
-          break;
+        if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+          // Extract filename from path for better matching
+          // Example: @./manifest/040_output/01_dialect/component.md → component
+          const pathMatch = trimmed.match(/([^/]+)\.md\s*$/);
+          if (pathMatch) {
+            const filename = pathMatch[1];
+            const cleanedPartial = FuzzyMatch.clean(partial);
+            const score = FuzzyMatch.score(filename, cleanedPartial);
+            if (score > 0.3) {
+              candidates.push({ line: trimmed, score, matchTarget: filename });
+            }
+          }
         }
       }
-      if (filesToRemove.length === 0) {
-        throw new Error(`File or override containing '${partial}' not found in template`);
+
+      if (candidates.length === 0) {
+        throw new Error(`File or override matching '${partial}' not found in template`);
       }
+
+      // Use best match
+      candidates.sort((a, b) => b.score - a.score);
+      filesToRemove.push(candidates[0].line);
     } else {
       // Use MultiManifest to verify section exists
       const sections = await this.multiManifest.listSections();
@@ -1027,62 +1155,82 @@ export class PersonaManager extends PersonaCore {
 
   async handleSetVar({ variable, value }) {
     const projectPath = process.cwd();
-    const projectDirName = this.getProjectDirName();
-    const projectVarsPath = path.join(this.plansDir, projectDirName, 'vars.txt');
+    const templatePath = this.getTemplatePath();
 
-    // Ensure project directory exists
-    const projectDir = path.join(this.plansDir, projectDirName);
+    // Ensure template directory exists
+    const templateDir = path.dirname(templatePath);
     try {
-      await fs.mkdir(projectDir, { recursive: true });
+      await fs.mkdir(templateDir, { recursive: true });
     } catch (error) {
       // Directory might already exist, that's ok
     }
-    
-    // Load existing project vars or start with empty
-    let varsContent = '';
+
+    // Load existing template or start with empty
+    let templateContent = '';
     try {
-      varsContent = await fs.readFile(projectVarsPath, 'utf8');
+      templateContent = await fs.readFile(templatePath, 'utf8');
     } catch (error) {
-      // No existing vars file, create header
-      varsContent = '# Project-specific Persona Variables\n# These override default_vars.txt\n# Format: KEY=value\n\n';
+      // No existing template, start fresh
+      templateContent = '';
     }
-    
-    // Parse existing variables
-    const lines = varsContent.split('\n');
-    const newLines = [];
-    let found = false;
-    
+
+    // Split into variable section and references section
+    const lines = templateContent.split('\n');
+    const varLines = [];
+    const refLines = [];
+    let inRefs = false;
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
+      if (trimmed.startsWith('@')) {
+        inRefs = true;
+      }
+
+      if (inRefs) {
+        refLines.push(line);
+      } else {
+        varLines.push(line);
+      }
+    }
+
+    // Update or add variable in var section
+    const newVarLines = [];
+    let found = false;
+
+    for (const line of varLines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
         const [key] = trimmed.split('=');
         if (key && key.trim() === variable) {
-          newLines.push(`${variable}=${value}`);
+          newVarLines.push(`${variable}=${value}`);
           found = true;
         } else {
-          newLines.push(line);
+          newVarLines.push(line);
         }
       } else {
-        newLines.push(line);
+        newVarLines.push(line);
       }
     }
-    
-    // If variable wasn't found, add it
+
+    // If variable wasn't found, add it to var section
     if (!found) {
-      // Add before the last empty line if there is one
-      if (newLines[newLines.length - 1] === '') {
-        newLines.splice(newLines.length - 1, 0, `${variable}=${value}`);
-      } else {
-        newLines.push(`${variable}=${value}`);
+      // Remove trailing empty lines from var section
+      while (newVarLines.length > 0 && newVarLines[newVarLines.length - 1].trim() === '') {
+        newVarLines.pop();
       }
+      newVarLines.push(`${variable}=${value}`);
+      newVarLines.push(''); // Blank line before refs
     }
-    
-    // Write back the file
-    await fs.writeFile(projectVarsPath, newLines.join('\n'));
-    
+
+    // Rebuild template
+    const newTemplate = [...newVarLines, ...refLines].join('\n');
+
+    // Write back the template
+    await fs.writeFile(templatePath, newTemplate);
+
     // Reload variables
     await this.loadVariables();
-    
+
     // Recompile persona with new variables
     await this.compilePersona(projectPath);
     
@@ -1286,6 +1434,10 @@ export class PersonaManager extends PersonaCore {
   async handleInspect() {
     try {
       const templatePath = this.getTemplatePath();
+      const projectPath = process.cwd();
+
+      // Trigger compilation to clean expired components before reading template
+      await this.compilePersona(projectPath);
 
       // Read template
       let template = '';
@@ -1351,7 +1503,6 @@ export class PersonaManager extends PersonaCore {
       }
 
       // Format output
-      const projectPath = process.cwd();
       const projectName = this.getProjectDirName();
 
       let output = [`Current Template (${projectName}):\n`];

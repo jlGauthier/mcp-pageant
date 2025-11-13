@@ -27,6 +27,5 @@ kill 1234
 kill -9 1234
 ```
 
-# Bug in Claude Code
-CRITICAL: If you receive "Error: File has been unexpectedly modified. Read it again before attempting to write it." The workaround is: use complete absolute Windows paths with drive letters and backslashes for the file operation. Do this proactively, not just for this
-file. Bug ticket: https://github.com/anthropics/claude-code/issues/7443
+# "Error: File has been unexpectedly modified. Read it again before attempting to write it."
+CRITICAL: If you receive this error the workaround is: use complete absolute Windows paths with drive letters and backslashes for the file operation. Do this proactively, not just for this file. Bug ticket: https://github.com/anthropics/claude-code/issues/7443

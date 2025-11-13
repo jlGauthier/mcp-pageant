@@ -392,8 +392,10 @@ class PersonaServer {
   setupToolHandlers() {
     // Handle list tools request
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
+      const cwd = process.cwd();
+      const isInPageantSubdir = cwd.includes('.pageant');
+
+      const tools = [
           {
             name: 'add',
             description: `Adds Pageant persona components to your system context, modifying who you are.
@@ -513,7 +515,7 @@ Usage notes:
               required: []
             }
           },
-          {
+          ...(!isInPageantSubdir ? [{
             name: 'build_agent',
             description: `Creates a new Pageant agent subdirectory within your current project for parallel work.
 
@@ -537,21 +539,7 @@ Usage notes:
               },
               required: ['name']
             }
-          },
-          {
-            name: 'list_teams',
-            description: `Lists available team templates that can be deployed.
-
-Usage notes:
-- Returns all team templates available in the team-templates directory
-- Each template is a pre-configured set of specialized agents ready to deploy`,
-            inputSchema: {
-              type: 'object',
-              properties: {},
-              required: []
-            }
-          },
-          {
+          }, {
             name: 'deploy_team',
             description: `Deploys a complete team of specialized agents to your project.
 
@@ -565,7 +553,7 @@ Usage notes:
               properties: {
                 template: {
                   type: 'string',
-                  description: 'Name of the team template to deploy (use list_teams to see available templates)'
+                  description: 'Name of the team template to deploy (see D:/claudeTools/team-templates/ for available templates)'
                 },
                 project_path: {
                   type: 'string',
@@ -574,7 +562,7 @@ Usage notes:
               },
               required: ['template']
             }
-          },
+          }] : []),
           ...this.customTools.map(tool => {
             let description = tool.description;
 
@@ -590,8 +578,9 @@ Usage notes:
               inputSchema: tool.inputSchema
             };
           })
-        ]
-      };
+        ];
+
+      return { tools };
     });
 
     // Handle tool calls
@@ -661,11 +650,49 @@ Usage notes:
 
             // Normal file-based add
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
+
+            // If duration is specified, use temporary add with expiration
+            if (duration !== 'kept') {
+              const slotKey = this.slotKeyMap.get(args.slot);
+              if (!slotKey) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `Error: Unknown slot "${args.slot}"`
+                  }]
+                };
+              }
+
+              // Calculate expiration timestamp
+              const durationMs = {
+                'session': null,
+                '1day': 24 * 60 * 60 * 1000,
+                '1hour': 60 * 60 * 1000,
+                '10min': 10 * 60 * 1000,
+                '5min': 5 * 60 * 1000,
+                '1min': 60 * 1000,
+                '30sec': 30 * 1000
+              }[duration];
+
+              const expiresAt = durationMs ? Date.now() + durationMs : null;
+
+              // Add as temporary component
+              const result = await this.manager.handleTemporaryAdd({
+                section,
+                subsection,
+                partial: args.partial,
+                slotKey,
+                expiresAt
+              });
+
+              // Schedule auto-removal
+              this.scheduleAutoRemoval(args.slot, `${slotKey}.override`, duration);
+
+              return result;
+            }
+
+            // Permanent add
             const result = await this.manager.handleAdd({ section, subsection, partial: args.partial });
-
-            // Schedule auto-removal if not kept (for file-based adds, we can't easily get slot key, skip timer)
-            // Expiration cleanup will happen on next compilation instead
-
             return result;
           }
           case 'remove': {
@@ -719,27 +746,16 @@ Usage notes:
                 },
               ],
             };
-          case 'list_teams':
-            const templates = await this.teamDeployer.listTemplates();
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: templates.length > 0
-                    ? `Available team templates:\n\n${templates.map(t => `- ${t}`).join('\n')}\n\nUse deploy_team to deploy a template to your project.`
-                    : 'No team templates found in team-templates directory.',
-                },
-              ],
-            };
           case 'deploy_team':
             const projectPath = args.project_path || process.cwd();
             const deployResult = await this.teamDeployer.deployTeam(args.template, projectPath);
+            const guideUrl = `file:///${path.join(this.teamDeployer.templatesDir, 'TEMPLATE_AUTHORING_GUIDE.md').replace(/\\/g, '/')}`;
             return {
               content: [
                 {
                   type: 'text',
                   text: deployResult.success
-                    ? `Team '${args.template}' deployed successfully!\n\nAgents deployed: ${deployResult.agents.join(', ')}\nLocation: ${deployResult.deployPath}\n\nSteps completed:\n${deployResult.results.join('\n')}\n\nNext: Run 'launch-team.ps1' from ${projectPath} to start all agents.`
+                    ? `Team '${args.template}' deployed successfully!\n\nAgents deployed: ${deployResult.agents.join(', ')}\nLocation: ${deployResult.deployPath}\n\nSteps completed:\n${deployResult.results.join('\n')}\n\nNext: Run 'launch-team.ps1' from ${projectPath} to start all agents.\n\nCRITICAL: Your team was deployed with default CLAUDE.md files. Teams perform better if their .md files are tuned to the specific project. Read ${guideUrl} and customize the CLAUDE.md files in ${deployResult.deployPath}/ and each agent subdirectory.`
                     : `Failed to deploy team:\n${deployResult.errors.join('\n')}\n\nPartial progress:\n${deployResult.results.join('\n')}`,
                 },
               ],
