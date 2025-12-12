@@ -66,14 +66,37 @@ export class PersonaManager extends PersonaCore {
       // Plans default_vars.txt is optional
     }
 
-    // Finally override with project-specific vars if they exist
+    // Finally override with project-specific vars from template.md
     try {
-      const projectVarsPath = path.join(this.plansDir, this.getProjectDirName(), 'vars.txt');
-      const projectContent = await fs.readFile(projectVarsPath, 'utf8');
-      this.parseVariables(projectContent);
+      const templatePath = this.getTemplatePath();
+      const templateContent = await fs.readFile(templatePath, 'utf8');
+      const templateVars = this.extractVariablesFromTemplate(templateContent);
+      this.parseVariables(templateVars);
     } catch (error) {
-      // Project vars are optional, no warning needed
+      // Template vars are optional, no warning needed
     }
+  }
+
+  extractVariablesFromTemplate(templateContent) {
+    // Extract variables from top of template (before first @ line)
+    const lines = templateContent.split('\n');
+    const varLines = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('@')) {
+        // Hit first reference, stop parsing vars
+        break;
+      }
+      if (trimmed && !trimmed.startsWith('#')) {
+        // Could be a variable line
+        if (trimmed.includes('=')) {
+          varLines.push(line);
+        }
+      }
+    }
+
+    return varLines.join('\n');
   }
   
   parseVariables(content) {
@@ -268,29 +291,6 @@ export class PersonaManager extends PersonaCore {
     return path.join(this.plansDir, this.getProjectDirName(), 'persona.md');
   }
 
-  // Helper methods using MultiManifest
-  async findFileWithMultiManifest(section, subsection, partial) {
-    // If partial includes .md, remove it
-    if (partial && partial.endsWith('.md')) {
-      partial = partial.replace('.md', '');
-    }
-
-    const fileInfo = await this.multiManifest.findFile(section, subsection, partial);
-    if (fileInfo) {
-      return fileInfo.path;
-    }
-    return null;
-  }
-
-  async findFilesWithMultiManifest(section, subsection, partial) {
-    const files = await this.multiManifest.findFiles(section, subsection, partial);
-    return files.map(f => f.path);
-  }
-
-  async readFileWithMultiManifest(section, subsection, partial) {
-    const result = await this.multiManifest.readFile(section, subsection, partial);
-    return result ? result.content : null;
-  }
   // Extract slot key from a reference path
   // Slot key = all numbered path components joined with dots
   // Examples:
@@ -417,126 +417,12 @@ export class PersonaManager extends PersonaCore {
     await fs.writeFile(templatePath, cleanTemplate, 'utf8');
   }
 
-  formatCompiledContent(content) {
-    const lines = content.split('\n');
-    const formatted = [];
-    let currentMainSection = null; // Track # level section
-    let currentSubSection = null;  // Track ## level section
-    let lastLineWasBlank = false;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const headerMatch = line.match(/^(#{1,6})\s*(.+)/);
-
-      if (headerMatch) {
-        const level = headerMatch[1].length;
-        const title = headerMatch[2].trim();
-
-        // Handle section headers that were added during compilation
-        // Only treat as main section if it matches known section patterns
-        const knownSections = ['Main', 'Pattern List', 'Output', 'User', 'End'];
-        const isMainSection = level === 1 && knownSections.includes(title);
-
-        if (isMainSection) {
-          // Main section header
-          // Add blank line BEFORE section (not after), except at very start
-          if (formatted.length > 0) {
-            // Always add blank line before main sections except the first one
-            if (!lastLineWasBlank) {
-              formatted.push('');
-            }
-          }
-          currentMainSection = title;
-          currentSubSection = null;
-          formatted.push(`# ${title}`);
-          lastLineWasBlank = false;
-        } else if (level === 2 && currentMainSection) {
-          // Subsection header under main section
-          // Add blank line before ## headers too (except at start)
-          if (formatted.length > 0 && !lastLineWasBlank) {
-            formatted.push('');
-          }
-          currentSubSection = title;
-          formatted.push(`## ${title}`);
-          lastLineWasBlank = false;
-        } else {
-          // Content headers that need adjustment
-          let adjustedLevel = level;
-
-          // If we're inside a main section, adjust the level
-          if (currentMainSection) {
-            if (currentSubSection) {
-              // We're in a ## subsection, so content headers start at ###
-              // All content headers become ### under a subsection
-              adjustedLevel = 3;
-            } else {
-              // We're directly under a # section
-              // All content headers should become ##
-              adjustedLevel = 2; // All headers become ## under main section
-            }
-          } else {
-            // Not in a section, keep original level
-            adjustedLevel = level;
-          }
-
-          // Cap at ### for deeply nested headers
-          adjustedLevel = Math.min(3, adjustedLevel);
-
-          // Fix spacing (like ###Emojis -> ### Emojis)
-          formatted.push(`${'#'.repeat(adjustedLevel)} ${title}`);
-          lastLineWasBlank = false;
-        }
-      } else if (line.trim() === '') {
-        // Track blank lines
-        formatted.push(line);
-        lastLineWasBlank = true;
-      } else {
-        // Regular content
-        formatted.push(line);
-        lastLineWasBlank = false;
-      }
-    }
-
-    // Second pass: Remove duplicate headers and fix specific issues
-    const finalFormatted = [];
-    let previousHeader = null;
-
-    for (let i = 0; i < formatted.length; i++) {
-      const line = formatted[i];
-      const headerMatch = line.match(/^(#{1,3})\s+(.+)/);
-
-      if (headerMatch) {
-        const level = headerMatch[1].length;
-        const title = headerMatch[2];
-
-        // Skip duplicate consecutive headers at same level with same title
-        if (previousHeader &&
-            previousHeader.level === level &&
-            previousHeader.title === title) {
-          continue;
-        }
-
-        // Special handling for misplaced headers
-        // Skip ## Narration if it appears under wrong section
-        if (level === 2 && currentMainSection === 'Pattern List' && title === 'Narration') {
-          continue; // Skip ## Narration under Pattern List
-        }
-
-        previousHeader = { level, title };
-      } else {
-        previousHeader = null;
-      }
-
-      finalFormatted.push(line);
-    }
-
-    return finalFormatted.join('\n');
-  }
 
   // Parse inline text override
   // Format: SLOT_KEY - virtual/path/name [expires:timestamp]: content text here
   // Example: 040.01 - output/dialect/friendly: Warm conversational tone
   // Example with expiration: 020.5.override - pattern/temp_rule [expires:1762005000000]: Always verify edge cases
+  // Note: Newlines in content are escaped as \\n to preserve multiline content during template re-sorts
   parseInlineOverride(line) {
     const match = line.match(/^(\d+(?:\.\d+)*(?:\.\w+)?)\s*-\s*([^:]+?)(?:\s*\[expires:(\d+)\])?\s*:\s*(.+)$/);
     if (!match) return null;
@@ -548,10 +434,13 @@ export class PersonaManager extends PersonaCore {
       return { expired: true, slotKey: match[1] };
     }
 
+    // Unescape newlines in content
+    const content = match[4].trim().replace(/\\n/g, '\n');
+
     return {
       slotKey: match[1],
       virtualPath: match[2].trim(),
-      content: match[4].trim(),
+      content,
       expiresAt
     };
   }
@@ -634,7 +523,23 @@ export class PersonaManager extends PersonaCore {
 
       if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
         const isOverride = trimmed.startsWith('@@');
-        const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+        let refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
+
+        // Check for expiration metadata [expires:timestamp]
+        const expiresMatch = refPath.match(/^(.+?)\s+\[expires:(\d+)\]$/);
+        if (expiresMatch) {
+          const expiresAt = parseInt(expiresMatch[2], 10);
+          if (Date.now() > expiresAt) {
+            // Expired - mark for removal
+            const slotKey = this.getSlotKey(expiresMatch[1], isOverride);
+            if (slotKey) {
+              expiredSlots.push(slotKey);
+            }
+            continue;
+          }
+          // Not expired - strip expiration metadata and continue
+          refPath = expiresMatch[1];
+        }
 
         if (refPath.endsWith('/')) {
           continue;
@@ -932,6 +837,73 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
+  /**
+   * Adds a component as a temporary inline override with expiration.
+   * Used for duration-based component adds.
+   * @param {Object} params - { section, subsection, partial, slotKey, expiresAt }
+   * @returns {Object} MCP response
+   */
+  async handleTemporaryAdd({ section, subsection, partial, slotKey, expiresAt }) {
+    const projectPath = process.cwd();
+
+    // Use handleAdd logic to resolve and find the file
+    const sections = await this.multiManifest.listSections();
+    const sectionNames = sections.map(s => s.name);
+
+    let matchedSection = sectionNames.find(s => s === section);
+    if (!matchedSection) {
+      matchedSection = this.fuzzyMatch(sectionNames, section);
+      if (!matchedSection) {
+        throw new Error(`No section matching '${section}' found. Available: ${sectionNames.join(', ')}`);
+      }
+    }
+
+    let matchedSubsection = subsection;
+    if (subsection) {
+      const subsections = await this.multiManifest.listSubsections(matchedSection);
+      const subsectionNames = subsections.map(s => s.name);
+      matchedSubsection = this.fuzzyMatch(subsectionNames, subsection);
+
+      if (!matchedSubsection) {
+        throw new Error(`No subsection matching '${subsection}' found in ${matchedSection}`);
+      }
+    }
+
+    // Find the file
+    const fileInfo = await this.multiManifest.findFile(matchedSection, matchedSubsection, partial);
+    if (!fileInfo) {
+      throw new Error(`No file matching '${partial}' found in ${matchedSection}${matchedSubsection ? '/' + matchedSubsection : ''}`);
+    }
+
+    // For files with duration, add as override reference with expiration tracking
+    const templatePath = this.getTemplatePath();
+
+    // Build reference path
+    const relativePath = path.relative(this.baseDir, fileInfo.path).replace(/\\/g, '/');
+
+    // Add expiration metadata as comment before the reference
+    const expiresPart = expiresAt ? ` [expires:${expiresAt}]` : '';
+    const overrideRef = `@@${relativePath}${expiresPart}`;
+
+    // Remove any existing component in this slot
+    await this.removeSlotByKey(templatePath, `${slotKey}.override`);
+
+    // Add the override reference to template
+    await this.addReferenceToTemplate(templatePath, overrideRef);
+
+    // Compile the persona
+    await this.compilePersona(projectPath);
+
+    const fileName = path.basename(fileInfo.path, '.md');
+
+    return {
+      content: [{
+        type: 'text',
+        text: `Added "${fileName}" as override with expiration and compiled persona.`
+      }]
+    };
+  }
+
   async removeSlotByKey(templatePath, slotKey) {
     // Read current template
     let template = '';
@@ -1022,25 +994,47 @@ export class PersonaManager extends PersonaCore {
 
     if (partial) {
       // Find specific file or inline override by partial name in template
+      // Build list of candidates with fuzzy scores
+      const candidates = [];
+
       for (const line of lines) {
         const trimmed = line.trim();
 
         // Check inline overrides
         const inlineOverride = this.parseInlineOverride(trimmed);
-        if (inlineOverride && !inlineOverride.expired && inlineOverride.virtualPath.includes(partial)) {
-          filesToRemove.push(trimmed);
-          break;
+        if (inlineOverride && !inlineOverride.expired) {
+          // Extract just the filename from virtual path for matching
+          const filename = path.basename(inlineOverride.virtualPath, '.md');
+          const cleanedPartial = FuzzyMatch.clean(partial);
+          const score = FuzzyMatch.score(filename, cleanedPartial);
+          if (score > 0.3) {
+            candidates.push({ line: trimmed, score, matchTarget: filename });
+          }
         }
 
         // Check file references
-        if ((trimmed.startsWith('@@') || trimmed.startsWith('@')) && trimmed.includes(partial)) {
-          filesToRemove.push(trimmed);
-          break;
+        if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
+          // Extract filename from path for better matching
+          // Example: @./manifest/040_output/01_dialect/component.md → component
+          const pathMatch = trimmed.match(/([^/]+)\.md\s*$/);
+          if (pathMatch) {
+            const filename = pathMatch[1];
+            const cleanedPartial = FuzzyMatch.clean(partial);
+            const score = FuzzyMatch.score(filename, cleanedPartial);
+            if (score > 0.3) {
+              candidates.push({ line: trimmed, score, matchTarget: filename });
+            }
+          }
         }
       }
-      if (filesToRemove.length === 0) {
-        throw new Error(`File or override containing '${partial}' not found in template`);
+
+      if (candidates.length === 0) {
+        throw new Error(`File or override matching '${partial}' not found in template`);
       }
+
+      // Use best match
+      candidates.sort((a, b) => b.score - a.score);
+      filesToRemove.push(candidates[0].line);
     } else {
       // Use MultiManifest to verify section exists
       const sections = await this.multiManifest.listSections();
@@ -1177,130 +1171,85 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
-  async handleCreate({ section, subsection, filename, secondperson_prompt_from_system_to_assistant }) {
-    // Get all available sections using MultiManifest
-    const sections = await this.multiManifest.listSections();
-    const sectionNames = sections.map(s => s.name);
-
-    // Fuzzy match the section - prefer exact match
-    let matchedSection = sectionNames.find(s => s === section);
-    if (!matchedSection) {
-      matchedSection = this.fuzzyMatch(sectionNames, section);
-      if (!matchedSection) {
-        return {
-          content: [{
-            type: 'text',
-            text: `Error: Section '${section}' does not exist. Available: ${sectionNames.join(', ')}`
-          }]
-        };
-      }
-    }
-
-    // Ensure .md extension
-    const fullFilename = filename.endsWith('.md') ? filename : `${filename}.md`;
-
-    // Format the content with a header
-    const sectionName = matchedSection.replace(/^\\d{3}_/, '');
-    const header = subsection
-      ? `# ${sectionName}/${subsection}\\n## ${path.basename(filename, '.md')}`
-      : `# ${sectionName}\\n## ${path.basename(filename, '.md')}`;
-
-    const content = `${header}
-
-${secondperson_prompt_from_system_to_assistant}`;
-
-    // Use MultiManifest to write the file
-    const result = await this.multiManifest.writeFile(
-      matchedSection,
-      subsection,
-      fullFilename,
-      content,
-      true // createDir
-    );
-
-    if (!result.success) {
-      return {
-        content: [{
-          type: 'text',
-          text: `Error creating file: ${result.error}`
-        }]
-      };
-    }
-
-    // Create the partial name for the add command
-    const partialName = path.basename(filename, '.md');
-
-    // Build the add command example - use original section name for user clarity
-    const addCommand = subsection
-      ? `mcp__pageant__add section:"${section}" subsection:"${subsection}" partial:"${partialName}"`
-      : `mcp__pageant__add section:"${section}" partial:"${partialName}"`;
-
-    return {
-      content: [{
-        type: 'text',
-        text: `Created new persona section at ${result.path}\\n\\nContent:\\n${content}\\n\\n✅  File created but NOT added to current persona yet.\\n\\nTo add this to your persona, use:\\n${addCommand}`
-      }]
-    };
-  }
 
   async handleSetVar({ variable, value }) {
     const projectPath = process.cwd();
-    const projectDirName = this.getProjectDirName();
-    const projectVarsPath = path.join(this.plansDir, projectDirName, 'vars.txt');
+    const templatePath = this.getTemplatePath();
 
-    // Ensure project directory exists
-    const projectDir = path.join(this.plansDir, projectDirName);
+    // Ensure template directory exists
+    const templateDir = path.dirname(templatePath);
     try {
-      await fs.mkdir(projectDir, { recursive: true });
+      await fs.mkdir(templateDir, { recursive: true });
     } catch (error) {
       // Directory might already exist, that's ok
     }
-    
-    // Load existing project vars or start with empty
-    let varsContent = '';
+
+    // Load existing template or start with empty
+    let templateContent = '';
     try {
-      varsContent = await fs.readFile(projectVarsPath, 'utf8');
+      templateContent = await fs.readFile(templatePath, 'utf8');
     } catch (error) {
-      // No existing vars file, create header
-      varsContent = '# Project-specific Persona Variables\n# These override default_vars.txt\n# Format: KEY=value\n\n';
+      // No existing template, start fresh
+      templateContent = '';
     }
-    
-    // Parse existing variables
-    const lines = varsContent.split('\n');
-    const newLines = [];
-    let found = false;
-    
+
+    // Split into variable section and references section
+    const lines = templateContent.split('\n');
+    const varLines = [];
+    const refLines = [];
+    let inRefs = false;
+
     for (const line of lines) {
       const trimmed = line.trim();
-      if (trimmed && !trimmed.startsWith('#')) {
+      if (trimmed.startsWith('@')) {
+        inRefs = true;
+      }
+
+      if (inRefs) {
+        refLines.push(line);
+      } else {
+        varLines.push(line);
+      }
+    }
+
+    // Update or add variable in var section
+    const newVarLines = [];
+    let found = false;
+
+    for (const line of varLines) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
         const [key] = trimmed.split('=');
         if (key && key.trim() === variable) {
-          newLines.push(`${variable}=${value}`);
+          newVarLines.push(`${variable}=${value}`);
           found = true;
         } else {
-          newLines.push(line);
+          newVarLines.push(line);
         }
       } else {
-        newLines.push(line);
+        newVarLines.push(line);
       }
     }
-    
-    // If variable wasn't found, add it
+
+    // If variable wasn't found, add it to var section
     if (!found) {
-      // Add before the last empty line if there is one
-      if (newLines[newLines.length - 1] === '') {
-        newLines.splice(newLines.length - 1, 0, `${variable}=${value}`);
-      } else {
-        newLines.push(`${variable}=${value}`);
+      // Remove trailing empty lines from var section
+      while (newVarLines.length > 0 && newVarLines[newVarLines.length - 1].trim() === '') {
+        newVarLines.pop();
       }
+      newVarLines.push(`${variable}=${value}`);
+      newVarLines.push(''); // Blank line before refs
     }
-    
-    // Write back the file
-    await fs.writeFile(projectVarsPath, newLines.join('\n'));
-    
+
+    // Rebuild template
+    const newTemplate = [...newVarLines, ...refLines].join('\n');
+
+    // Write back the template
+    await fs.writeFile(templatePath, newTemplate);
+
     // Reload variables
     await this.loadVariables();
-    
+
     // Recompile persona with new variables
     await this.compilePersona(projectPath);
     
@@ -1504,6 +1453,10 @@ ${secondperson_prompt_from_system_to_assistant}`;
   async handleInspect() {
     try {
       const templatePath = this.getTemplatePath();
+      const projectPath = process.cwd();
+
+      // Trigger compilation to clean expired components before reading template
+      await this.compilePersona(projectPath);
 
       // Read template
       let template = '';
@@ -1569,7 +1522,6 @@ ${secondperson_prompt_from_system_to_assistant}`;
       }
 
       // Format output
-      const projectPath = process.cwd();
       const projectName = this.getProjectDirName();
 
       let output = [`Current Template (${projectName}):\n`];
@@ -1614,9 +1566,12 @@ ${secondperson_prompt_from_system_to_assistant}`;
     // Ensure project directory exists
     await fs.mkdir(projectDir, { recursive: true });
 
+    // Escape newlines in content to preserve multiline content during template re-sorts
+    const escapedContent = content.replace(/\n/g, '\\n');
+
     // Build the inline override line with optional expiration
     const expiresPart = expiresAt ? ` [expires:${expiresAt}]` : '';
-    const inlineLine = `${slot_key} - ${virtual_path}${expiresPart}: ${content}`;
+    const inlineLine = `${slot_key} - ${virtual_path}${expiresPart}: ${escapedContent}`;
 
     // Remove any existing component in this slot
     await this.removeSlotByKey(templatePath, slot_key);

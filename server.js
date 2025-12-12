@@ -16,6 +16,7 @@ import fs from 'fs/promises';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
 import { AgentBuilder } from './src/AgentBuilder.js';
+import { TeamDeployer } from './src/TeamDeployer.js';
 
 class PersonaServer {
   constructor() {
@@ -24,6 +25,7 @@ class PersonaServer {
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
     this.webEditor = new WebEditor(this.manager);
     this.agentBuilder = new AgentBuilder(__dirname);
+    this.teamDeployer = new TeamDeployer(__dirname);
 
     this.variableNames = [];
     this.toolHints = {};
@@ -390,8 +392,10 @@ class PersonaServer {
   setupToolHandlers() {
     // Handle list tools request
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
+      const cwd = process.cwd();
+      const isInPageantSubdir = cwd.includes('.pageant');
+
+      const tools = [
           {
             name: 'add',
             description: `Adds Pageant persona components to your system context, modifying who you are.
@@ -459,14 +463,15 @@ Usage notes:
 Usage notes:
 - Returns components organized by section (main, tech, pattern, jobs, output, etc.)
 - Use this tool to discover available components before calling add
-- Slot keys indicate replacement behavior: components with the same slot key replace each other`,
+- Slot keys indicate replacement behavior: components with the same slot key replace each other
+- Use slot="self" to show active components currently loaded in your template (inspect mode)`,
             inputSchema: {
               type: 'object',
               properties: {
                 slot: {
                   type: 'string',
-                  enum: [...this.slotEnum, ''],
-                  description: 'Optional slot to filter results. Leave empty for all.'
+                  enum: ['self', ...this.slotEnum, ''],
+                  description: 'Optional slot to filter results. Leave empty for all. Use "self" to inspect active template.'
                 }
               },
               required: []
@@ -511,31 +516,30 @@ Usage notes:
               required: []
             }
           },
-          {
-            name: 'build_agent',
-            description: `Creates a new Pageant agent subdirectory within your current project for parallel work.
+          ...(!isInPageantSubdir ? [{
+            name: 'deploy_team',
+            description: `Deploys a complete team of specialized agents to your project.
 
 Usage notes:
-- Generates agent directory with manifest, template, and configuration files
-- Allows multiple agents with different personas to work on the same project
-- Optionally installs specified MCP servers for the new agent
-- Use this tool to add specialized agents (e.g., QA agent, docs agent) alongside your primary agent`,
+- Copies pre-configured agent directories from template to .pageant/
+- Each agent gets a unique ID and compiled persona
+- Automatically adds .pageant to .gitignore
+- Run 'launch-team.ps1' after deployment to start all agents in Windows Terminal tabs`,
             inputSchema: {
               type: 'object',
               properties: {
-                name: {
+                template: {
                   type: 'string',
-                  description: 'Name for the new agent (alphanumeric with underscores or hyphens)'
+                  description: 'Name of the team template to deploy (see D:/claudeTools/team-templates/ for available templates)'
                 },
-                mcps: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'List of MCPs to install (default: pageant)'
+                project_path: {
+                  type: 'string',
+                  description: 'Path to project directory (defaults to current working directory)'
                 }
               },
-              required: ['name']
+              required: ['template']
             }
-          },
+          }] : []),
           ...this.customTools.map(tool => {
             let description = tool.description;
 
@@ -551,8 +555,9 @@ Usage notes:
               inputSchema: tool.inputSchema
             };
           })
-        ]
-      };
+        ];
+
+      return { tools };
     });
 
     // Handle tool calls
@@ -622,11 +627,49 @@ Usage notes:
 
             // Normal file-based add
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
+
+            // If duration is specified, use temporary add with expiration
+            if (duration !== 'kept') {
+              const slotKey = this.slotKeyMap.get(args.slot);
+              if (!slotKey) {
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `Error: Unknown slot "${args.slot}"`
+                  }]
+                };
+              }
+
+              // Calculate expiration timestamp
+              const durationMs = {
+                'session': null,
+                '1day': 24 * 60 * 60 * 1000,
+                '1hour': 60 * 60 * 1000,
+                '10min': 10 * 60 * 1000,
+                '5min': 5 * 60 * 1000,
+                '1min': 60 * 1000,
+                '30sec': 30 * 1000
+              }[duration];
+
+              const expiresAt = durationMs ? Date.now() + durationMs : null;
+
+              // Add as temporary component
+              const result = await this.manager.handleTemporaryAdd({
+                section,
+                subsection,
+                partial: args.partial,
+                slotKey,
+                expiresAt
+              });
+
+              // Schedule auto-removal
+              this.scheduleAutoRemoval(args.slot, `${slotKey}.override`, duration);
+
+              return result;
+            }
+
+            // Permanent add
             const result = await this.manager.handleAdd({ section, subsection, partial: args.partial });
-
-            // Schedule auto-removal if not kept (for file-based adds, we can't easily get slot key, skip timer)
-            // Expiration cleanup will happen on next compilation instead
-
             return result;
           }
           case 'remove': {
@@ -634,6 +677,10 @@ Usage notes:
             return await this.manager.handleRemove({ section, subsection, partial: args.partial });
           }
           case 'list': {
+            // "self" triggers inspect mode - show active template components
+            if (args.slot === 'self') {
+              return await this.manager.handleInspect();
+            }
             if (args.slot && args.slot !== '') {
               const { section, subsection } = this.slotToSectionSubsection(args.slot);
               return await this.manager.handleList({ section, subsection });
@@ -666,17 +713,17 @@ Usage notes:
               };
             }
             break;
-          case 'build_agent':
-            const buildResult = await this.agentBuilder.buildAgent(args.name, {
-              mcps: args.mcps || ['pageant']
-            });
+          case 'deploy_team':
+            const projectPath = args.project_path || process.cwd();
+            const deployResult = await this.teamDeployer.deployTeam(args.template, projectPath);
+            const guideUrl = `file:///${path.join(this.teamDeployer.templatesDir, 'TEMPLATE_AUTHORING_GUIDE.md').replace(/\\/g, '/')}`;
             return {
               content: [
                 {
                   type: 'text',
-                  text: buildResult.success
-                    ? `Agent '${args.name}' created successfully!\n\nPath: ${buildResult.agentPath}\n\nSteps completed:\n${buildResult.results.join('\n')}`
-                    : `Failed to create agent: ${buildResult.error}\n\nPartial progress:\n${buildResult.results.join('\n')}`,
+                  text: deployResult.success
+                    ? `Team '${args.template}' deployed successfully!\n\nAgents deployed: ${deployResult.agents.join(', ')}\nLocation: ${deployResult.deployPath}\n\nSteps completed:\n${deployResult.results.join('\n')}\n\nNext: Run 'launch-team.ps1' from ${projectPath} to start all agents.\n\nCRITICAL: Your team was deployed with default CLAUDE.md files. Teams perform better if their .md files are tuned to the specific project. Read ${guideUrl} and customize the CLAUDE.md files in ${deployResult.deployPath}/ and each agent subdirectory.`
+                    : `Failed to deploy team:\n${deployResult.errors.join('\n')}\n\nPartial progress:\n${deployResult.results.join('\n')}`,
                 },
               ],
             };
@@ -704,25 +751,28 @@ Usage notes:
   setupPromptHandlers() {
     // Handle prompt listing
     this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      const cwd = process.cwd();
+      const isInPageantSubdir = cwd.includes('.pageant');
+
       return {
-        prompts: [
+        prompts: !isInPageantSubdir ? [
           {
-            name: 'build',
-            description: 'Build a new agent with the specified name',
+            name: 'build-agent',
+            description: 'Build a new specialized agent for this project',
             arguments: [
               {
                 name: 'agent_name',
-                description: 'Name for the new agent',
+                description: 'Name for the new agent (e.g., FS, QC, TW)',
                 required: true
+              },
+              {
+                name: 'role',
+                description: 'Brief description of agent role (optional)',
+                required: false
               }
             ]
-          },
-          {
-            name: 'browser',
-            description: 'Open the persona web editor in browser',
-            arguments: []
           }
-        ]
+        ] : []
       };
     });
 
@@ -731,27 +781,59 @@ Usage notes:
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case 'build':
-          return {
-            messages: [
-              {
-                role: 'user',
-                content: {
-                  type: 'text',
-                  text: `Build a new agent named "${args?.agent_name}" using the mcp__persona__build_agent tool`
-                }
-              }
-            ]
-          };
+        case 'build-agent':
+          const agentName = args?.agent_name;
+          const role = args?.role || '';
 
-        case 'browser':
+          // Discover tech stack first
+          const projectPath = process.cwd();
+          const techStack = await this.agentBuilder.detectTechStack(projectPath);
+          const businessDomain = await this.agentBuilder.extractBusinessDomain(projectPath);
+
+          // Build the agent
+          const buildResult = await this.agentBuilder.buildAgent(agentName, {
+            mcps: ['pageant', 'lace'],
+            role: role
+          });
+
+          let promptText = '';
+
+          if (buildResult.success) {
+            promptText = `Built agent "${agentName}" successfully! 🎯
+
+**Discovered Tech Stack:**
+${techStack.frameworks.length > 0 ? techStack.frameworks.map(f => `- ${f}`).join('\n') : '- No tech stack detected'}
+
+**Business Domain:**
+${businessDomain.description || 'No business domain found in CLAUDE.md'}
+${businessDomain.entities.length > 0 ? `\n**Key Entities:** ${businessDomain.entities.join(', ')}` : ''}
+
+**Agent Location:** ${buildResult.agentPath}
+
+**Steps Completed:**
+${buildResult.results.join('\n')}
+
+**Next Steps - Customize Your Agent:**
+1. Edit \`.pageant/${agentName}/CLAUDE.md\` to define specific role and responsibilities
+2. Update tech stack focus areas based on what the agent will work on
+3. Add collaboration notes (which other agents this one works with)
+4. Review and adjust the persona template if needed
+
+The agent has been created with real tech stack info (not generic placeholders). Make it concrete!`;
+          } else {
+            promptText = `Failed to build agent "${agentName}": ${buildResult.error}
+
+**Partial Progress:**
+${buildResult.results.join('\n')}`;
+          }
+
           return {
             messages: [
               {
                 role: 'user',
                 content: {
                   type: 'text',
-                  text: 'Open the persona web editor using the mcp__persona__web_editor tool with action "open"'
+                  text: promptText
                 }
               }
             ]

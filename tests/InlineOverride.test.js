@@ -69,4 +69,23 @@ describe('parseInlineOverride', () => {
     expect(manager.parseInlineOverride('# Comment')).toBeNull();
     expect(manager.parseInlineOverride('invalid format')).toBeNull();
   });
+
+  it('should unescape newlines in multiline content', () => {
+    const line = '060 - test/inline_content: Line one\\nLine two\\nLine three';
+    const result = manager.parseInlineOverride(line);
+
+    expect(result).toEqual({
+      slotKey: '060',
+      virtualPath: 'test/inline_content',
+      content: 'Line one\nLine two\nLine three',
+      expiresAt: null
+    });
+  });
+
+  it('should preserve escaped content with multiple paragraphs', () => {
+    const line = '040.02 - output/narration/text: **Bold text**\\n\\nSecond paragraph\\n- List item';
+    const result = manager.parseInlineOverride(line);
+
+    expect(result.content).toBe('**Bold text**\n\nSecond paragraph\n- List item');
+  });
 });
