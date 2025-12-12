@@ -32,7 +32,18 @@ mcp_pageant/
 │       └── vars.txt             # Project variables
 ├── editor-ui/                   # Web editor frontend
 ├── tests/                       # Test suites
+├── scripts/
+│   ├── debug-merge.js           # Debug manifest resolution
+│   └── compile-remote.js        # Compile agent in remote directory
 └── .env                         # Configuration
+```
+
+## Scripts
+
+### compile-remote.js
+Compile pageant for an agent in another directory without cd-ing there:
+```bash
+node D:/claudeTools/mcp_pageant/scripts/compile-remote.js "C:/James/thenuts/.pageant/TW"
 ```
 
 ## Core Architecture

@@ -1,14 +1,2 @@
 [
-  {
-    "name": "inspect",
-    "description": "Shows active persona components currently loaded in your template.\n\nUsage notes:\n- Returns each component with its slot key (e.g., slot: 001, slot: 040.01)\n- Use this tool to verify which components are active before adding or removing\n- Slot keys show replacement relationships between components",
-    "inputSchema": {
-      "type": "object",
-      "properties": {},
-      "required": []
-    },
-    "handler": {
-      "type": "inspect_template"
-    }
-  }
 ]

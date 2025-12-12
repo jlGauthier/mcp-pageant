@@ -463,14 +463,15 @@ Usage notes:
 Usage notes:
 - Returns components organized by section (main, tech, pattern, jobs, output, etc.)
 - Use this tool to discover available components before calling add
-- Slot keys indicate replacement behavior: components with the same slot key replace each other`,
+- Slot keys indicate replacement behavior: components with the same slot key replace each other
+- Use slot="self" to show active components currently loaded in your template (inspect mode)`,
             inputSchema: {
               type: 'object',
               properties: {
                 slot: {
                   type: 'string',
-                  enum: [...this.slotEnum, ''],
-                  description: 'Optional slot to filter results. Leave empty for all.'
+                  enum: ['self', ...this.slotEnum, ''],
+                  description: 'Optional slot to filter results. Leave empty for all. Use "self" to inspect active template.'
                 }
               },
               required: []
@@ -516,30 +517,6 @@ Usage notes:
             }
           },
           ...(!isInPageantSubdir ? [{
-            name: 'build_agent',
-            description: `Creates a new Pageant agent subdirectory within your current project for parallel work.
-
-Usage notes:
-- Generates agent directory with manifest, template, and configuration files
-- Allows multiple agents with different personas to work on the same project
-- Optionally installs specified MCP servers for the new agent
-- Use this tool to add specialized agents (e.g., QA agent, docs agent) alongside your primary agent`,
-            inputSchema: {
-              type: 'object',
-              properties: {
-                name: {
-                  type: 'string',
-                  description: 'Name for the new agent (alphanumeric with underscores or hyphens)'
-                },
-                mcps: {
-                  type: 'array',
-                  items: { type: 'string' },
-                  description: 'List of MCPs to install (default: pageant)'
-                }
-              },
-              required: ['name']
-            }
-          }, {
             name: 'deploy_team',
             description: `Deploys a complete team of specialized agents to your project.
 
@@ -700,6 +677,10 @@ Usage notes:
             return await this.manager.handleRemove({ section, subsection, partial: args.partial });
           }
           case 'list': {
+            // "self" triggers inspect mode - show active template components
+            if (args.slot === 'self') {
+              return await this.manager.handleInspect();
+            }
             if (args.slot && args.slot !== '') {
               const { section, subsection } = this.slotToSectionSubsection(args.slot);
               return await this.manager.handleList({ section, subsection });
@@ -732,20 +713,6 @@ Usage notes:
               };
             }
             break;
-          case 'build_agent':
-            const buildResult = await this.agentBuilder.buildAgent(args.name, {
-              mcps: args.mcps || ['pageant']
-            });
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: buildResult.success
-                    ? `Agent '${args.name}' created successfully!\n\nPath: ${buildResult.agentPath}\n\nSteps completed:\n${buildResult.results.join('\n')}`
-                    : `Failed to create agent: ${buildResult.error}\n\nPartial progress:\n${buildResult.results.join('\n')}`,
-                },
-              ],
-            };
           case 'deploy_team':
             const projectPath = args.project_path || process.cwd();
             const deployResult = await this.teamDeployer.deployTeam(args.template, projectPath);
@@ -784,25 +751,28 @@ Usage notes:
   setupPromptHandlers() {
     // Handle prompt listing
     this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
+      const cwd = process.cwd();
+      const isInPageantSubdir = cwd.includes('.pageant');
+
       return {
-        prompts: [
+        prompts: !isInPageantSubdir ? [
           {
-            name: 'build',
-            description: 'Build a new agent with the specified name',
+            name: 'build-agent',
+            description: 'Build a new specialized agent for this project',
             arguments: [
               {
                 name: 'agent_name',
-                description: 'Name for the new agent',
+                description: 'Name for the new agent (e.g., FS, QC, TW)',
                 required: true
+              },
+              {
+                name: 'role',
+                description: 'Brief description of agent role (optional)',
+                required: false
               }
             ]
-          },
-          {
-            name: 'browser',
-            description: 'Open the persona web editor in browser',
-            arguments: []
           }
-        ]
+        ] : []
       };
     });
 
@@ -811,27 +781,59 @@ Usage notes:
       const { name, arguments: args } = request.params;
 
       switch (name) {
-        case 'build':
-          return {
-            messages: [
-              {
-                role: 'user',
-                content: {
-                  type: 'text',
-                  text: `Build a new agent named "${args?.agent_name}" using the mcp__persona__build_agent tool`
-                }
-              }
-            ]
-          };
+        case 'build-agent':
+          const agentName = args?.agent_name;
+          const role = args?.role || '';
 
-        case 'browser':
+          // Discover tech stack first
+          const projectPath = process.cwd();
+          const techStack = await this.agentBuilder.detectTechStack(projectPath);
+          const businessDomain = await this.agentBuilder.extractBusinessDomain(projectPath);
+
+          // Build the agent
+          const buildResult = await this.agentBuilder.buildAgent(agentName, {
+            mcps: ['pageant', 'lace'],
+            role: role
+          });
+
+          let promptText = '';
+
+          if (buildResult.success) {
+            promptText = `Built agent "${agentName}" successfully! 🎯
+
+**Discovered Tech Stack:**
+${techStack.frameworks.length > 0 ? techStack.frameworks.map(f => `- ${f}`).join('\n') : '- No tech stack detected'}
+
+**Business Domain:**
+${businessDomain.description || 'No business domain found in CLAUDE.md'}
+${businessDomain.entities.length > 0 ? `\n**Key Entities:** ${businessDomain.entities.join(', ')}` : ''}
+
+**Agent Location:** ${buildResult.agentPath}
+
+**Steps Completed:**
+${buildResult.results.join('\n')}
+
+**Next Steps - Customize Your Agent:**
+1. Edit \`.pageant/${agentName}/CLAUDE.md\` to define specific role and responsibilities
+2. Update tech stack focus areas based on what the agent will work on
+3. Add collaboration notes (which other agents this one works with)
+4. Review and adjust the persona template if needed
+
+The agent has been created with real tech stack info (not generic placeholders). Make it concrete!`;
+          } else {
+            promptText = `Failed to build agent "${agentName}": ${buildResult.error}
+
+**Partial Progress:**
+${buildResult.results.join('\n')}`;
+          }
+
           return {
             messages: [
               {
                 role: 'user',
                 content: {
                   type: 'text',
-                  text: 'Open the persona web editor using the mcp__persona__web_editor tool with action "open"'
+                  text: promptText
                 }
               }
             ]

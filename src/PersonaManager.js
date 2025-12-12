@@ -407,6 +407,7 @@ export class PersonaManager extends PersonaCore {
   // Format: SLOT_KEY - virtual/path/name [expires:timestamp]: content text here
   // Example: 040.01 - output/dialect/friendly: Warm conversational tone
   // Example with expiration: 020.5.override - pattern/temp_rule [expires:1762005000000]: Always verify edge cases
+  // Note: Newlines in content are escaped as \\n to preserve multiline content during template re-sorts
   parseInlineOverride(line) {
     const match = line.match(/^(\d+(?:\.\d+)*(?:\.\w+)?)\s*-\s*([^:]+?)(?:\s*\[expires:(\d+)\])?\s*:\s*(.+)$/);
     if (!match) return null;
@@ -418,10 +419,13 @@ export class PersonaManager extends PersonaCore {
       return { expired: true, slotKey: match[1] };
     }
 
+    // Unescape newlines in content
+    const content = match[4].trim().replace(/\\n/g, '\n');
+
     return {
       slotKey: match[1],
       virtualPath: match[2].trim(),
-      content: match[4].trim(),
+      content,
       expiresAt
     };
   }
@@ -1547,9 +1551,12 @@ export class PersonaManager extends PersonaCore {
     // Ensure project directory exists
     await fs.mkdir(projectDir, { recursive: true });
 
+    // Escape newlines in content to preserve multiline content during template re-sorts
+    const escapedContent = content.replace(/\n/g, '\\n');
+
     // Build the inline override line with optional expiration
     const expiresPart = expiresAt ? ` [expires:${expiresAt}]` : '';
-    const inlineLine = `${slot_key} - ${virtual_path}${expiresPart}: ${content}`;
+    const inlineLine = `${slot_key} - ${virtual_path}${expiresPart}: ${escapedContent}`;
 
     // Remove any existing component in this slot
     await this.removeSlotByKey(templatePath, slot_key);
