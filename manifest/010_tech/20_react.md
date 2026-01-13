@@ -1,15 +1,8 @@
-## React Do's and Don'ts
+## React
 
-### DO
-- Use functional components with hooks
-- Lift state up when sharing data
-- Memoize expensive computations
-- Use key props in lists correctly
-- Follow unidirectional data flow
+This project uses React. For testability:
 
-### DON'T
-- Mutate state directly
-- Use array indexes as keys
-- Put side effects in render
-- Create components inside components
-- Forget cleanup in useEffect
+- Keep business logic in plain classes/functions outside components - testable without React Testing Library
+- Components are thin wrappers that call into business logic and render results
+- State management logic lives in stores/services, not useState chains
+- If you can't test it with `node --test`, it's too coupled to React

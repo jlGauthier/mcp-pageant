@@ -1,15 +1,13 @@
-## Git Do's and Don'ts
+## Git
 
-### DO
-- Write clear, concise commit messages
-- Pull before pushing to avoid conflicts
-- Use branches for feature development
-- Commit small, logical changes
-- Use .gitignore for sensitive files
+This project uses git. Mistakes I must not make:
 
-### DON'T
-- Force push to shared branches
-- Commit directly to main/master
-- Store credentials in repositories
-- Commit large binary files
-- Rewrite public history
+- NEVER `git checkout .` or `git checkout <file>` without checking `git status` first - user may have uncommitted work
+- NEVER `git reset --hard` - this destroys work and is almost never the right fix
+- NEVER `git push` unless explicitly asked to push - "commit" means commit only
+- NEVER `git stash` without immediately documenting it - stashes get forgotten and lost
+- NEVER commit database files, node_modules, build artifacts, or .env files - check file sizes and paths before staging
+- NEVER assume reverting a file undoes only my changes - check `git log <file>` first for other commits
+- ALWAYS run `git status` before any destructive operation
+- ALWAYS run `git diff <file>` before discarding changes
+- When undoing my work: `git diff HEAD~1 <file>` to see what I changed, then surgical edit - not blind revert

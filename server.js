@@ -11,7 +11,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs/promises';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
@@ -34,6 +34,7 @@ class PersonaServer {
     this.slotEnum = [];
     this.slotKeyMap = new Map(); // Maps slot name -> slot key
     this.talentDescriptions = [];
+    this.activeTimers = new Map(); // Maps slotKey -> timerId for cancellation
 
     this.server = new Server(
       {
@@ -43,8 +44,7 @@ class PersonaServer {
       {
         capabilities: {
           prompts: {},
-          tools: {},
-          resources: {}
+          tools: {}
         },
       }
     );
@@ -306,15 +306,31 @@ class PersonaServer {
     }
 
     if (durationMs) {
-      setTimeout(async () => {
+      // Cancel any existing timer for this slot to prevent stale timer interference
+      if (this.activeTimers.has(slotKey)) {
+        clearTimeout(this.activeTimers.get(slotKey));
+        console.log(`Cancelled previous timer for slot '${slotKey}'`);
+      }
+
+      const timerId = setTimeout(async () => {
         try {
+          // Clean up timer reference
+          this.activeTimers.delete(slotKey);
+
           const templatePath = this.manager.getTemplatePath();
           await this.manager.removeSlotByKey(templatePath, slotKey);
-          console.log(`Auto-removed slot '${slotKey}' after ${duration}`);
+
+          // Recompile after removal so the base file shows through
+          await this.manager.compilePersona(process.cwd());
+
+          console.log(`Auto-removed slot '${slotKey}' after ${duration} and recompiled`);
         } catch (error) {
           console.error(`Failed to auto-remove slot '${slotKey}':`, error.message);
         }
       }, durationMs);
+
+      // Track the timer so we can cancel it if a new override comes in
+      this.activeTimers.set(slotKey, timerId);
 
       console.log(`Scheduled auto-removal of slot '${slotKey}' in ${duration}`);
     }
@@ -346,39 +362,7 @@ class PersonaServer {
   }
 
   setupResourceHandlers() {
-    // Handle list resources request
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
-      return {
-        resources: [
-          {
-            uri: 'pageant://cross-agent/messages',
-            name: 'Cross-Agent Messages',
-            mimeType: 'text/markdown',
-            description: 'Shared messages between all agent instances (rolling 50 messages)'
-          }
-        ]
-      };
-    });
-
-    // Handle read resource request
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      const { uri } = request.params;
-
-      if (uri === 'pageant://cross-agent/messages') {
-        const content = await this.crossAgentMessages.getMessagesAsMarkdown();
-        return {
-          contents: [
-            {
-              uri,
-              mimeType: 'text/markdown',
-              text: content
-            }
-          ]
-        };
-      }
-
-      throw new Error(`Unknown resource: ${uri}`);
-    });
+    // No resources currently - cross-agent messaging was removed
   }
 
   setupErrorHandling() {
@@ -569,8 +553,16 @@ Usage notes:
           case 'add': {
             const duration = args.duration || 'kept';
 
-            // Check if partial is direct content (starts and ends with quotes or contains newlines)
-            if (args.partial && (args.partial.includes('\n') || (args.partial.startsWith('"') && args.partial.endsWith('"')))) {
+            // Check if partial is inline content (not a filename)
+            // - Contains spaces (filenames don't have spaces)
+            // - Contains newlines
+            // - Wrapped in quotes
+            const isInlineContent = args.partial && (
+              args.partial.includes(' ') ||
+              args.partial.includes('\n') ||
+              (args.partial.startsWith('"') && args.partial.endsWith('"'))
+            );
+            if (isInlineContent) {
               // Strip quotes if present
               const content = args.partial.startsWith('"') && args.partial.endsWith('"')
                 ? args.partial.slice(1, -1)

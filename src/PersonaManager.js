@@ -111,6 +111,49 @@ export class PersonaManager extends PersonaCore {
       }
     }
   }
+
+  /**
+   * Extract $VAR=value lines from component content.
+   * These are variable declarations at the top of component files.
+   * Returns an object with { variables: {key: value}, cleanedContent: string }
+   */
+  extractComponentVariables(content) {
+    const lines = content.split('\n');
+    const variables = {};
+    const cleanedLines = [];
+    let pastPreamble = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Once we hit a # header or @ dependency, we're past the preamble
+      if (trimmed.startsWith('#') || trimmed.startsWith('@')) {
+        pastPreamble = true;
+      }
+
+      // Only parse $VAR=value lines in the preamble
+      if (!pastPreamble && trimmed.startsWith('$') && trimmed.includes('=')) {
+        const withoutPrefix = trimmed.substring(1); // Remove $
+        const eqIndex = withoutPrefix.indexOf('=');
+        if (eqIndex > 0) {
+          const key = withoutPrefix.substring(0, eqIndex).trim();
+          const value = withoutPrefix.substring(eqIndex + 1).trim();
+          if (key && value) {
+            variables[key] = value;
+            continue; // Don't add to cleaned lines
+          }
+        }
+      }
+
+      cleanedLines.push(line);
+    }
+
+    return {
+      variables,
+      cleanedContent: cleanedLines.join('\n')
+    };
+  }
+
   substituteVariables(text) {
     let result = text;
     for (const [key, value] of Object.entries(this.variables)) {
@@ -566,14 +609,29 @@ export class PersonaManager extends PersonaCore {
           let content = await fs.readFile(filePath, 'utf8');
           content = this.substituteVariables(content);
 
-          // Remove dependency lines only
+          // Remove dependency lines (@) and variable declarations ($VAR=value)
           const contentLines = content.split('\n');
           const cleanLines = [];
+          let pastPreamble = false;
 
           for (const cLine of contentLines) {
-            if (cLine.trim().startsWith('@')) {
+            const trimmed = cLine.trim();
+
+            // Once we hit a # header, we're past the preamble
+            if (trimmed.startsWith('#')) {
+              pastPreamble = true;
+            }
+
+            // Skip @ dependency lines (anywhere in file)
+            if (trimmed.startsWith('@')) {
               continue;
             }
+
+            // Skip $VAR=value lines in the preamble only
+            if (!pastPreamble && trimmed.startsWith('$') && trimmed.includes('=')) {
+              continue;
+            }
+
             cleanLines.push(cLine);
           }
 
@@ -729,6 +787,20 @@ export class PersonaManager extends PersonaCore {
     const fileInfo = await this.multiManifest.findFile(matchedSection, matchedSubsection, partial);
     if (!fileInfo) {
       throw new Error(`No file matching '${partial}' found in ${matchedSection}${matchedSubsection ? '/' + matchedSubsection : ''}`);
+    }
+
+    // Extract and apply component variables ($VAR=value lines)
+    try {
+      const fileContent = await fs.readFile(fileInfo.path, 'utf8');
+      const { variables } = this.extractComponentVariables(fileContent);
+
+      // Apply each variable to the project
+      for (const [key, value] of Object.entries(variables)) {
+        await this.handleSetVar({ variable: key, value });
+        console.log(`Set ${key}=${value} from component ${path.basename(fileInfo.path)}`);
+      }
+    } catch (error) {
+      console.log(`Could not extract component variables: ${error.message}`);
     }
 
     // If no subsection was specified but the file is in one, use it
@@ -946,6 +1018,36 @@ export class PersonaManager extends PersonaCore {
     await fs.writeFile(templatePath, cleanedLines.join('\n'), 'utf8');
   }
 
+  async removeByLiteralRef(templatePath, refLine) {
+    // Remove a template line by exact/fuzzy match (for unnumbered directories)
+    let template = '';
+    try {
+      template = await fs.readFile(templatePath, 'utf8');
+    } catch (error) {
+      return; // No template to clean
+    }
+
+    const lines = template.split('\n');
+    const cleanedLines = [];
+    const targetRef = refLine.trim();
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Match exact reference or with/without leading @/@@
+      if (trimmed === targetRef ||
+          trimmed === '@' + targetRef ||
+          trimmed === '@@' + targetRef ||
+          '@' + trimmed === targetRef ||
+          '@@' + trimmed === targetRef) {
+        console.log(`Removing literal ref: ${trimmed}`);
+        continue;
+      }
+      cleanedLines.push(line);
+    }
+
+    await fs.writeFile(templatePath, cleanedLines.join('\n'), 'utf8');
+  }
+
   async addReferenceToTemplate(templatePath, newReference) {
     // Read current template
     let template = '';
@@ -1105,6 +1207,11 @@ export class PersonaManager extends PersonaCore {
           if (depSlotKey) {
             await this.removeSlotByKey(templatePath, depSlotKey);
             totalDepsRemoved++;
+          } else {
+            // Unnumbered dependency - remove by literal reference
+            const depRef = (dep.isOverride ? '@@' : '@') + './' + depPath;
+            await this.removeByLiteralRef(templatePath, depRef);
+            totalDepsRemoved++;
           }
         }
       } catch (error) {
@@ -1116,6 +1223,9 @@ export class PersonaManager extends PersonaCore {
       const mainSlotKey = this.getSlotKey(filePath, isOverride);
       if (mainSlotKey) {
         await this.removeSlotByKey(templatePath, mainSlotKey);
+      } else {
+        // Unnumbered directory - remove by literal reference line
+        await this.removeByLiteralRef(templatePath, fileRef);
       }
     }
 
