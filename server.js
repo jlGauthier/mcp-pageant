@@ -389,8 +389,9 @@ Pageant defines your identity through composable markdown components organized i
 Usage notes:
 - Specify \`partial\` to match a component filename (e.g., "athletic" matches "athletic_fit")
 - Use \`partial=random\` to add a random component from the specified slot
-- Put \`partial\` in quotes to add inline content directly (e.g., "custom text here")
+- Inline content is auto-detected when partial contains spaces (e.g., "custom configuration text")
 - Use \`duration\` to auto-remove after specified time (default: kept permanently)
+- Temporary components auto-restore the previous content when they expire
 - The tool compiles your persona automatically after adding the component
 
 Manifest directories:
@@ -405,7 +406,7 @@ ${this.manager.manifestDirs.map(dir => `- ${dir}`).join('\n')}`,
                 },
                 partial: {
                   type: 'string',
-                  description: 'Partial filename to match, "random" for random selection, or quoted string for inline content'
+                  description: 'Partial filename to match, "random" for random selection, or inline content (auto-detected by spaces)'
                 },
                 duration: {
                   type: 'string',
