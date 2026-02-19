@@ -13,5 +13,6 @@ DEBUG_MODE=false
 LOG_LEVEL=info
 
 # Persona
-AGENT_NAME=Bob
+AGENT_NAME=Agent
+AGENT_COLOR=#888888
 DEFAULT_TONE=professional

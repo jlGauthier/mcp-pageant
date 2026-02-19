@@ -35,12 +35,19 @@ export class PersonaManager extends PersonaCore {
     this.variables = {};
     this.variablesLoaded = this.loadVariables();
 
-    // Override for web editor project switching
-    this.overrideProjectDirName = null;
+    // Override for web editor project switching or direct CLI
+    this.overrideProjectDirName = options.overrideProjectDirName || null;
 
     // Cache project directory name - calculated once at startup
     this.projectDirName = null;
-    this.projectDirNameInitialized = this.initializeProjectDirName();
+    // Skip initialization if override is provided OR if skipInit is true (for direct CLI use)
+    this.projectDirNameInitialized = (this.overrideProjectDirName || options.skipInit)
+      ? Promise.resolve()
+      : this.initializeProjectDirName();
+
+    // Build section map from manifest directories
+    this._sectionMapCache = null;
+    this.sectionMapInitialized = this.buildSectionMap();
   }
   async loadVariables() {
     this.variables = {};
@@ -201,12 +208,12 @@ export class PersonaManager extends PersonaCore {
   }
 
   // Write PAGEANT_ID to CLAUDE.local.md
-  async writePageantId(id) {
+  async writePageantId(id, targetDir = null) {
     if (this.testMode) {
       return; // Skip writes in test mode
     }
 
-    const claudeLocalPath = path.join(process.cwd(), 'CLAUDE.local.md');
+    const claudeLocalPath = path.join(targetDir || process.cwd(), 'CLAUDE.local.md');
     try {
       let content = await fs.readFile(claudeLocalPath, 'utf8');
 
@@ -230,6 +237,52 @@ export class PersonaManager extends PersonaCore {
         return;
       }
       console.error('Error writing PAGEANT_ID:', error);
+      throw error;
+    }
+  }
+
+  // Write AGENT_NAME as HTML comment to CLAUDE.local.md for proxy variable extraction
+  async writeAgentName(targetDir = null) {
+    if (this.testMode) {
+      return;
+    }
+
+    const agentName = this.variables['AGENT_NAME'];
+    if (!agentName) {
+      return; // No AGENT_NAME variable defined
+    }
+
+    const claudeLocalPath = path.join(targetDir || process.cwd(), 'CLAUDE.local.md');
+    try {
+      let content = await fs.readFile(claudeLocalPath, 'utf8');
+
+      const comment = `<!-- AGENT_NAME: ${agentName} -->`;
+
+      if (content.match(/<!--\s*AGENT_NAME:/)) {
+        // Replace existing
+        content = content.replace(
+          /<!--\s*AGENT_NAME:\s*.+?\s*-->/,
+          comment
+        );
+      } else {
+        // Insert after PAGEANT_ID line, or prepend if no PAGEANT_ID
+        const pageantIdMatch = content.match(/<!--\s*PAGEANT_ID:\s*.+?\s*-->/);
+        if (pageantIdMatch) {
+          content = content.replace(
+            pageantIdMatch[0],
+            `${pageantIdMatch[0]}\n${comment}`
+          );
+        } else {
+          content = `${comment}\n\n${content}`;
+        }
+      }
+
+      await fs.writeFile(claudeLocalPath, content, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        return;
+      }
+      console.error('Error writing AGENT_NAME:', error);
       throw error;
     }
   }
@@ -325,6 +378,79 @@ export class PersonaManager extends PersonaCore {
       return this.overrideProjectDirName;
     }
     return this.projectDirName;
+  }
+
+  // Initialize for a remote target directory (used by direct.js)
+  // Runs full copy detection logic for the target path
+  async initializeForRemote(targetDir) {
+    const targetPathId = this.generatePathId(targetDir);
+    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
+
+    // Read existing ID from target's CLAUDE.local.md
+    let existingId = null;
+    try {
+      const content = await fs.readFile(claudeLocalPath, 'utf8');
+      const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
+      existingId = match ? match[1].trim() : null;
+    } catch (error) {
+      // No CLAUDE.local.md
+    }
+
+    console.log(`🎯 Target path ID: ${targetPathId}`);
+    if (existingId) console.log(`📄 Existing ID in file: ${existingId}`);
+
+    // If no existing ID, use target path ID
+    if (!existingId) {
+      this.overrideProjectDirName = targetPathId;
+      return targetPathId;
+    }
+
+    // If ID matches target path, use it directly
+    if (existingId.toLowerCase() === targetPathId.toLowerCase()) {
+      const matchingDir = await this.findPlanDirectory(targetPathId);
+      this.overrideProjectDirName = matchingDir || targetPathId;
+      return this.overrideProjectDirName;
+    }
+
+    // ID doesn't match path - detect copy
+    const oldPlanDir = await this.findPlanDirectory(existingId);
+    const oldTemplatePath = oldPlanDir ? path.join(this.plansDir, oldPlanDir, 'template.md') : null;
+    const oldTemplateExists = oldTemplatePath ? await fs.access(oldTemplatePath).then(() => true).catch(() => false) : false;
+
+    // Check if target path already has a plan
+    const targetPlanDir = await this.findPlanDirectory(targetPathId);
+    const targetTemplatePath = targetPlanDir ? path.join(this.plansDir, targetPlanDir, 'template.md') : null;
+    const targetTemplateExists = targetTemplatePath ? await fs.access(targetTemplatePath).then(() => true).catch(() => false) : false;
+
+    if (targetTemplateExists) {
+      // Target already has a plan - use it
+      console.log(`📁 Using existing plan for target: ${targetPlanDir}`);
+      this.overrideProjectDirName = targetPlanDir;
+      // Update the PAGEANT_ID in the file
+      await this.writePageantId(targetPlanDir, targetDir);
+      return targetPlanDir;
+    }
+
+    if (oldTemplateExists) {
+      // Old plan exists but target doesn't - COPY the plan
+      const newPlanPath = path.join(this.plansDir, targetPathId);
+      const oldPlanPath = path.join(this.plansDir, oldPlanDir);
+
+      console.log(`📋 Copying plan: ${oldPlanDir} → ${targetPathId}`);
+      await fs.cp(oldPlanPath, newPlanPath, { recursive: true });
+
+      // Update the PAGEANT_ID in the target file
+      await this.writePageantId(targetPathId, targetDir);
+
+      this.overrideProjectDirName = targetPathId;
+      return targetPathId;
+    }
+
+    // No plan exists anywhere - create fresh with target ID
+    console.log(`🆕 No existing plan, using target ID: ${targetPathId}`);
+    this.overrideProjectDirName = targetPathId;
+    await this.writePageantId(targetPathId, targetDir);
+    return targetPathId;
   }
 
   getTemplatePath() {
@@ -488,10 +614,97 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
+  // Map section name (from inline path) to directory format for grouping
+  // Resolves dynamically from manifest directories (e.g., "main" → "001_main")
+  mapSectionNameToDir(sectionName) {
+    const lower = sectionName.toLowerCase();
+    if (this._sectionMapCache) {
+      return this._sectionMapCache[lower] || `000_${sectionName}`;
+    }
+    return `000_${sectionName}`;
+  }
+
+  // Build section name → directory map from manifest structure
+  async buildSectionMap() {
+    const sections = await this.multiManifest.listSections();
+    this._sectionMapCache = {};
+    for (const section of sections) {
+      // "070_look" → "look" = "070_look"
+      const shortName = section.name.replace(/^\d+[_-]/, '').toLowerCase();
+      this._sectionMapCache[shortName] = section.name;
+    }
+  }
+
+  // Process a single component reference: resolve file, extract vars/deps, recurse into deps
+  async processComponentRef(refPath, isOverride, fileDataList, refMap, processed) {
+    if (processed.has(refPath)) return;
+    processed.add(refPath);
+
+    const filePath = await this.multiManifest.resolveReference(`@${refPath}`);
+    if (!filePath) {
+      console.warn(`File not found: ${refPath}`);
+      return;
+    }
+
+    let content = await fs.readFile(filePath, 'utf8');
+
+    // Extract and apply $VAR=value declarations from preamble
+    // Component vars override defaults — they are identity declarations
+    const { variables } = this.extractComponentVariables(content);
+    for (const [key, value] of Object.entries(variables)) {
+      this.variables[key] = value;
+    }
+
+    // Extract @ dependency lines from preamble and process them first
+    const deps = await this.multiManifest.extractDependencies(filePath);
+    for (const dep of deps) {
+      const depRefPath = path.relative(this.baseDir, dep.absolutePath).split(path.sep).join('/');
+      const depRef = `./${depRefPath}`;
+      const depSlotKey = this.getSlotKey(depRef, dep.isOverride);
+      if (depSlotKey && !refMap.has(depSlotKey)) {
+        refMap.set(depSlotKey, { path: depRef, isOverride: dep.isOverride });
+        await this.processComponentRef(depRef, dep.isOverride, fileDataList, refMap, processed);
+      }
+    }
+
+    // Now substitute variables (after deps may have added more vars)
+    content = this.substituteVariables(content);
+
+    // Clean: remove @ lines and $VAR= preamble lines
+    const contentLines = content.split('\n');
+    const cleanLines = [];
+    let pastPreamble = false;
+
+    for (const cLine of contentLines) {
+      const trimmed = cLine.trim();
+
+      if (trimmed.startsWith('#')) {
+        pastPreamble = true;
+      }
+
+      if (trimmed.startsWith('@')) {
+        continue;
+      }
+
+      if (!pastPreamble && trimmed.startsWith('$') && trimmed.includes('=')) {
+        continue;
+      }
+
+      cleanLines.push(cLine);
+    }
+
+    const cleanedContent = cleanLines.join('\n').trim();
+    const slotKey = this.getSlotKey(refPath, isOverride);
+    const filename = path.basename(refPath, '.md');
+
+    fileDataList.push([slotKey, refPath, filename, cleanedContent]);
+  }
+
   // Pure compilation: takes template content, returns formatted persona
   async compileFromTemplate(templateContent) {
-    // Ensure variables are loaded
+    // Ensure variables and section map are loaded
     await this.variablesLoaded;
+    await this.sectionMapInitialized;
 
     const lines = templateContent.split('\n');
 
@@ -535,6 +748,7 @@ export class PersonaManager extends PersonaCore {
 
     // PHASE 1: Collect all file data [slotKey, fullPath, filename, content]
     const fileDataList = [];
+    const processed = new Set();
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -599,53 +813,12 @@ export class PersonaManager extends PersonaCore {
           }
         }
 
-        const filePath = await this.multiManifest.resolveReference(`@${refPath}`);
-        if (!filePath) {
-          console.warn(`File not found: ${refPath}`);
-          continue;
-        }
-
-        try {
-          let content = await fs.readFile(filePath, 'utf8');
-          content = this.substituteVariables(content);
-
-          // Remove dependency lines (@) and variable declarations ($VAR=value)
-          const contentLines = content.split('\n');
-          const cleanLines = [];
-          let pastPreamble = false;
-
-          for (const cLine of contentLines) {
-            const trimmed = cLine.trim();
-
-            // Once we hit a # header, we're past the preamble
-            if (trimmed.startsWith('#')) {
-              pastPreamble = true;
-            }
-
-            // Skip @ dependency lines (anywhere in file)
-            if (trimmed.startsWith('@')) {
-              continue;
-            }
-
-            // Skip $VAR=value lines in the preamble only
-            if (!pastPreamble && trimmed.startsWith('$') && trimmed.includes('=')) {
-              continue;
-            }
-
-            cleanLines.push(cLine);
-          }
-
-          const cleanedContent = cleanLines.join('\n').trim();
-          const slotKey = this.getSlotKey(refPath, isOverride);
-          const filename = path.basename(refPath, '.md');
-
-          fileDataList.push([slotKey, refPath, filename, cleanedContent]);
-        } catch (error) {
-          console.error(`ERROR: Could not read required file: ${refPath}`);
-          throw new Error(`Template references missing file: ${refPath}`);
-        }
+        await this.processComponentRef(refPath, isOverride, fileDataList, refMap, processed);
       }
     }
+
+    // Sort by slot key so sections appear in correct order (001 before 020, etc.)
+    fileDataList.sort((a, b) => a[0].localeCompare(b[0]));
 
     // PHASE 2: Format with look-ahead context
     const formatted = await formatWithContext(fileDataList, this.multiManifest);
@@ -689,8 +862,11 @@ export class PersonaManager extends PersonaCore {
       // Write the formatted persona directly to CLAUDE.local.md for real-time updates
       await fs.writeFile(claudeLocalPath, formattedContent);
 
-      // Add PAGEANT_ID to CLAUDE.local.md
-      await this.writePageantId(this.projectDirName);
+      // Add PAGEANT_ID to CLAUDE.local.md (pass projectPath for remote compiles)
+      await this.writePageantId(this.getProjectDirName(), projectPath);
+
+      // Add AGENT_NAME as HTML comment for proxy variable extraction
+      await this.writeAgentName(projectPath);
 
       return true;
     } catch (error) {
@@ -1160,11 +1336,23 @@ export class PersonaManager extends PersonaCore {
         }
       }
 
-      // Find matching files in template
+      // Find matching files and inline overrides in template
       for (const line of lines) {
         const trimmed = line.trim();
+
+        // Check inline overrides — match by virtual path starting with section name
+        const inlineOverride = this.parseInlineOverride(trimmed);
+        if (inlineOverride && !inlineOverride.expired) {
+          const pathParts = inlineOverride.virtualPath.split('/');
+          if (pathParts[0] === section) {
+            if (!matchedSubsection || (pathParts.length > 1 && pathParts[1] === matchedSubsection)) {
+              filesToRemove.push(trimmed);
+            }
+          }
+        }
+
+        // Check file references
         if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
-          // Check if this line matches the section/subsection
           if (trimmed.includes(`/${matchedSection}/`)) {
             if (!matchedSubsection || trimmed.includes(`/${matchedSection}/${matchedSubsection}/`)) {
               filesToRemove.push(trimmed);
@@ -1584,9 +1772,30 @@ export class PersonaManager extends PersonaCore {
       const lines = template.split('\n');
       const references = [];
 
-      // Parse all @ and @@ references
+      // Parse all @ and @@ references AND inline overrides
       for (const line of lines) {
         const trimmed = line.trim();
+
+        // Check for inline overrides first (format: "010.1 - section/sub/name: content")
+        const inlineOverride = this.parseInlineOverride(trimmed);
+        if (inlineOverride && !inlineOverride.expired) {
+          // Extract section from virtual path (e.g., "tech/sub/name" -> "010_tech")
+          const pathParts = inlineOverride.virtualPath.split('/');
+          const sectionName = pathParts[0] || 'inline';
+          // Map section name to section directory format
+          const sectionDir = this.mapSectionNameToDir(sectionName);
+
+          references.push({
+            path: inlineOverride.virtualPath,
+            section: sectionDir,
+            slotKey: inlineOverride.slotKey,
+            isOverride: false,
+            isInline: true,
+            content: inlineOverride.content
+          });
+          continue;
+        }
+
         if (trimmed.startsWith('@@') || trimmed.startsWith('@')) {
           const isOverride = trimmed.startsWith('@@');
           const refPath = isOverride ? trimmed.substring(2) : trimmed.substring(1);
@@ -1627,7 +1836,9 @@ export class PersonaManager extends PersonaCore {
         grouped[ref.section].push({
           filename,
           slotKey: ref.slotKey,
-          isOverride: ref.isOverride
+          isOverride: ref.isOverride,
+          isInline: ref.isInline || false,
+          content: ref.content
         });
       }
 
@@ -1641,8 +1852,16 @@ export class PersonaManager extends PersonaCore {
 
         output.push(`\n# ${sectionName}`);
         for (const file of files) {
-          const prefix = file.isOverride ? '@@' : '@';
-          output.push(`  ${prefix}${file.filename} [slot: ${file.slotKey}]`);
+          if (file.isInline) {
+            // Format inline override with truncated content preview
+            const preview = file.content.length > 40
+              ? file.content.substring(0, 40) + '...'
+              : file.content;
+            output.push(`  ${file.filename} [slot: ${file.slotKey}] (inline: "${preview}")`);
+          } else {
+            const prefix = file.isOverride ? '@@' : '@';
+            output.push(`  ${prefix}${file.filename} [slot: ${file.slotKey}]`);
+          }
         }
       }
 

@@ -4,20 +4,24 @@
  *
  * Usage:
  *   node compile-remote.js <agent-directory>
- *   node compile-remote.js "C:/James/thenuts/.pageant/TW"
+ *   node compile-remote.js "/project/.pageant/agent"
  *
  * This script allows compiling pageant personas for agents in other directories
  * without needing to cd into them or run the MCP from that location.
  */
 
-import 'dotenv/config';
-import fs from 'fs/promises';
-import path from 'path';
+import dotenv from 'dotenv';
 import { fileURLToPath } from 'url';
-import { PersonaManager } from '../src/PersonaManager.js';
+import path from 'path';
 
+// Load .env from script's parent directory (mcp_pageant), not cwd
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const envPath = path.resolve(__dirname, '..', '.env');
+dotenv.config({ path: envPath });
+
+import fs from 'fs/promises';
+import { PersonaManager } from '../src/PersonaManager.js';
 
 async function compileRemote(targetDir) {
   // Resolve to absolute path
@@ -70,35 +74,43 @@ async function compileRemote(targetDir) {
   const targetId = manager.generatePathId(absoluteTarget);
   console.log(`🎯  Target ID: ${targetId}`);
 
-  // Override the project directory name to point to target
-  manager.overrideProjectDirName = existingId || targetId;
+  // Determine which ID to use - prefer targetId if it has a plan
+  let useId = null;
+  const targetPlanDir = path.join(manager.plansDir, targetId);
+  const existingPlanDir = existingId ? path.join(manager.plansDir, existingId) : null;
 
-  // If no existing ID, we need to ensure the plan directory exists
-  const planDir = path.join(manager.plansDir, manager.overrideProjectDirName);
+  // Check if targetId has a plan
   try {
-    await fs.access(planDir);
-    console.log(`📁  Plan directory exists: ${planDir}`);
+    await fs.access(path.join(targetPlanDir, 'template.md'));
+    useId = targetId;
+    console.log(`📁  Plan found for target ID: ${targetPlanDir}`);
   } catch {
-    console.log(`📁  Plan directory not found: ${planDir}`);
-
-    // Try to find with the generated ID instead
+    // targetId doesn't have a plan, try existingId
     if (existingId && existingId !== targetId) {
-      const altPlanDir = path.join(manager.plansDir, targetId);
       try {
-        await fs.access(altPlanDir);
-        console.log(`📁  Found plan at: ${altPlanDir}`);
-        manager.overrideProjectDirName = targetId;
+        await fs.access(path.join(existingPlanDir, 'template.md'));
+        useId = existingId;
+        console.log(`📁  Plan found for existing ID: ${existingPlanDir}`);
       } catch {
-        console.error(`❌  No plan directory found for this agent.`);
-        console.error(`   Looked for: ${existingId}`);
-        console.error(`   Also tried: ${targetId}`);
-        process.exit(1);
+        // Neither has a plan
       }
-    } else {
-      console.error(`❌  No plan directory found: ${planDir}`);
-      process.exit(1);
     }
   }
+
+  if (!useId) {
+    console.error(`❌  No plan directory found for this agent.`);
+    console.error(`   Looked for: ${targetId}`);
+    if (existingId && existingId !== targetId) {
+      console.error(`   Also tried: ${existingId}`);
+    }
+    process.exit(1);
+  }
+
+  manager.overrideProjectDirName = useId;
+
+  // Reload variables now that we know the correct project directory
+  // (loadVariables runs at construction before overrideProjectDirName is set)
+  await manager.loadVariables();
 
   // Check template exists
   const templatePath = manager.getTemplatePath();
@@ -144,8 +156,8 @@ if (args.length === 0) {
 Usage: node compile-remote.js <agent-directory>
 
 Examples:
-  node compile-remote.js "C:/James/thenuts/.pageant/TW"
-  node compile-remote.js ../my-project/.pageant/FS
+  node compile-remote.js "/project/.pageant/agent"
+  node compile-remote.js ../my-project/.pageant/agent
 
 This compiles the pageant persona for an agent in another directory.
 The agent must already have a plan configured (template.md in plans/).

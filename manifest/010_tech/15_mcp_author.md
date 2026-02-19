@@ -10,8 +10,7 @@
 **Global `~/.claude.json` (do not use)**
 - Indexed by working directory path
 - Modified via `claude mcp add/remove` commands default scope
-- bloated with all agents
-- Clean with `D:\claudeTools\mcp_dawn\admin_tools\clean-claude-json.js`
+- Bloated with all agents, avoid
 
 ## MCP Development Pattern
 1. Business logic MUST be written in testable layer with no MCP dependencies

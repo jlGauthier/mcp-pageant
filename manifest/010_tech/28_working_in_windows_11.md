@@ -1,10 +1,9 @@
-# Windows 11
-
+# Working In Windows 11
 ```bash
 # Directories
 mkdir test_dir
 mkdir -p subdir/nested
-cd /d/claudeTools/test
+cd /path/to/project
 ls -la
 rm -rf dir_with_contents
 

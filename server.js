@@ -16,7 +16,6 @@ import fs from 'fs/promises';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
 import { AgentBuilder } from './src/AgentBuilder.js';
-import { TeamDeployer } from './src/TeamDeployer.js';
 
 class PersonaServer {
   constructor() {
@@ -25,7 +24,6 @@ class PersonaServer {
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
     this.webEditor = new WebEditor(this.manager);
     this.agentBuilder = new AgentBuilder(__dirname);
-    this.teamDeployer = new TeamDeployer(__dirname);
 
     this.variableNames = [];
     this.toolHints = {};
@@ -288,16 +286,20 @@ class PersonaServer {
     return { section: slot, subsection: undefined };
   }
 
-  scheduleAutoRemoval(slot, slotKey, duration) {
-    const durationMs = {
-      'session': null, // Handle session cleanup separately
+  getDurationMs(duration) {
+    return {
+      'session': null,
       '1day': 24 * 60 * 60 * 1000,
       '1hour': 60 * 60 * 1000,
       '10min': 10 * 60 * 1000,
       '5min': 5 * 60 * 1000,
       '1min': 60 * 1000,
       '30sec': 30 * 1000
-    }[duration];
+    }[duration] || null;
+  }
+
+  scheduleAutoRemoval(slot, slotKey, duration) {
+    const durationMs = this.getDurationMs(duration);
 
     if (duration === 'session') {
       // Session cleanup happens when MCP disconnects - not implemented yet
@@ -390,6 +392,7 @@ Usage notes:
 - Specify \`partial\` to match a component filename (e.g., "athletic" matches "athletic_fit")
 - Use \`partial=random\` to add a random component from the specified slot
 - Inline content is auto-detected when partial contains spaces (e.g., "custom configuration text")
+- File path: pass a relative or absolute path (e.g., "./plans/QA/05-onboarding.md") to inject any file as a component
 - Use \`duration\` to auto-remove after specified time (default: kept permanently)
 - Temporary components auto-restore the previous content when they expire
 - The tool compiles your persona automatically after adding the component
@@ -501,30 +504,6 @@ Usage notes:
               required: []
             }
           },
-          ...(!isInPageantSubdir ? [{
-            name: 'deploy_team',
-            description: `Deploys a complete team of specialized agents to your project.
-
-Usage notes:
-- Copies pre-configured agent directories from template to .pageant/
-- Each agent gets a unique ID and compiled persona
-- Automatically adds .pageant to .gitignore
-- Run 'launch-team.ps1' after deployment to start all agents in Windows Terminal tabs`,
-            inputSchema: {
-              type: 'object',
-              properties: {
-                template: {
-                  type: 'string',
-                  description: 'Name of the team template to deploy (see D:/claudeTools/team-templates/ for available templates)'
-                },
-                project_path: {
-                  type: 'string',
-                  description: 'Path to project directory (defaults to current working directory)'
-                }
-              },
-              required: ['template']
-            }
-          }] : []),
           ...this.customTools.map(tool => {
             let description = tool.description;
 
@@ -554,55 +533,56 @@ Usage notes:
           case 'add': {
             const duration = args.duration || 'kept';
 
-            // Check if partial is inline content (not a filename)
-            // - Contains spaces (filenames don't have spaces)
-            // - Contains newlines
-            // - Wrapped in quotes
+            // Resolve content source: inline text, file path, or manifest component
             const isInlineContent = args.partial && (
               args.partial.includes(' ') ||
               args.partial.includes('\n') ||
               (args.partial.startsWith('"') && args.partial.endsWith('"'))
             );
-            if (isInlineContent) {
-              // Strip quotes if present
-              const content = args.partial.startsWith('"') && args.partial.endsWith('"')
-                ? args.partial.slice(1, -1)
-                : args.partial;
 
-              // Look up slot key from the map we built during initialization
+            const isFilePath = args.partial && (
+              args.partial.startsWith('./') ||
+              args.partial.startsWith('../') ||
+              args.partial.startsWith('/') ||
+              /^[a-zA-Z]:[/\\]/.test(args.partial)
+            );
+
+            // --- Inline content or file path: inject via thrift ---
+            if (isInlineContent || isFilePath) {
+              let content, virtualPath;
+
+              if (isFilePath) {
+                const resolvedPath = path.resolve(process.cwd(), args.partial);
+                try {
+                  content = await fs.readFile(resolvedPath, 'utf8');
+                } catch (error) {
+                  return {
+                    content: [{ type: 'text', text: `Error: Could not read file "${resolvedPath}": ${error.message}` }]
+                  };
+                }
+                const fileName = path.basename(resolvedPath, path.extname(resolvedPath));
+                virtualPath = `${args.slot}/file_${fileName}`;
+              } else {
+                content = args.partial.startsWith('"') && args.partial.endsWith('"')
+                  ? args.partial.slice(1, -1)
+                  : args.partial;
+                virtualPath = `${args.slot}/inline_${Date.now()}`;
+              }
+
               let slotKey = this.slotKeyMap.get(args.slot);
               if (!slotKey) {
                 return {
-                  content: [{
-                    type: 'text',
-                    text: `Error: Unknown slot "${args.slot}"`
-                  }]
+                  content: [{ type: 'text', text: `Error: Unknown slot "${args.slot}"` }]
                 };
               }
 
-              // If temporary (not kept), use override slot key so it doesn't replace base
               let expiresAt = null;
               if (duration !== 'kept') {
                 slotKey = `${slotKey}.override`;
-
-                // Calculate expiration timestamp
-                const durationMs = {
-                  'session': null,
-                  '1day': 24 * 60 * 60 * 1000,
-                  '1hour': 60 * 60 * 1000,
-                  '10min': 10 * 60 * 1000,
-                  '5min': 5 * 60 * 1000,
-                  '1min': 60 * 1000,
-                  '30sec': 30 * 1000
-                }[duration];
-
-                if (durationMs) {
-                  expiresAt = Date.now() + durationMs;
-                }
+                const durationMs = this.getDurationMs(duration);
+                if (durationMs) expiresAt = Date.now() + durationMs;
               }
 
-              // Route to thrift handler
-              const virtualPath = `${args.slot}/inline_${Date.now()}`;
               const result = await this.manager.handleThrift({
                 slot_key: slotKey,
                 virtual_path: virtualPath,
@@ -610,7 +590,6 @@ Usage notes:
                 expiresAt
               });
 
-              // Schedule auto-removal if not kept
               if (duration !== 'kept') {
                 this.scheduleAutoRemoval(args.slot, slotKey, duration);
               }
@@ -618,35 +597,20 @@ Usage notes:
               return result;
             }
 
-            // Normal file-based add
+            // --- Manifest component add ---
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
 
-            // If duration is specified, use temporary add with expiration
             if (duration !== 'kept') {
               const slotKey = this.slotKeyMap.get(args.slot);
               if (!slotKey) {
                 return {
-                  content: [{
-                    type: 'text',
-                    text: `Error: Unknown slot "${args.slot}"`
-                  }]
+                  content: [{ type: 'text', text: `Error: Unknown slot "${args.slot}"` }]
                 };
               }
 
-              // Calculate expiration timestamp
-              const durationMs = {
-                'session': null,
-                '1day': 24 * 60 * 60 * 1000,
-                '1hour': 60 * 60 * 1000,
-                '10min': 10 * 60 * 1000,
-                '5min': 5 * 60 * 1000,
-                '1min': 60 * 1000,
-                '30sec': 30 * 1000
-              }[duration];
-
+              const durationMs = this.getDurationMs(duration);
               const expiresAt = durationMs ? Date.now() + durationMs : null;
 
-              // Add as temporary component
               const result = await this.manager.handleTemporaryAdd({
                 section,
                 subsection,
@@ -655,15 +619,11 @@ Usage notes:
                 expiresAt
               });
 
-              // Schedule auto-removal
               this.scheduleAutoRemoval(args.slot, `${slotKey}.override`, duration);
-
               return result;
             }
 
-            // Permanent add
-            const result = await this.manager.handleAdd({ section, subsection, partial: args.partial });
-            return result;
+            return await this.manager.handleAdd({ section, subsection, partial: args.partial });
           }
           case 'remove': {
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
@@ -706,21 +666,7 @@ Usage notes:
               };
             }
             break;
-          case 'deploy_team':
-            const projectPath = args.project_path || process.cwd();
-            const deployResult = await this.teamDeployer.deployTeam(args.template, projectPath);
-            const guideUrl = `file:///${path.join(this.teamDeployer.templatesDir, 'TEMPLATE_AUTHORING_GUIDE.md').replace(/\\/g, '/')}`;
-            return {
-              content: [
-                {
-                  type: 'text',
-                  text: deployResult.success
-                    ? `Team '${args.template}' deployed successfully!\n\nAgents deployed: ${deployResult.agents.join(', ')}\nLocation: ${deployResult.deployPath}\n\nSteps completed:\n${deployResult.results.join('\n')}\n\nNext: Run 'launch-team.ps1' from ${projectPath} to start all agents.\n\nCRITICAL: Your team was deployed with default CLAUDE.md files. Teams perform better if their .md files are tuned to the specific project. Read ${guideUrl} and customize the CLAUDE.md files in ${deployResult.deployPath}/ and each agent subdirectory.`
-                    : `Failed to deploy team:\n${deployResult.errors.join('\n')}\n\nPartial progress:\n${deployResult.results.join('\n')}`,
-                },
-              ],
-            };
-          default:
+default:
             // Check custom tools from tools.json
             const customTool = this.customTools.find(t => t.name === name);
             if (customTool) {

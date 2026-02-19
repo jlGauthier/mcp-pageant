@@ -85,7 +85,7 @@ Claude Code, not the web interface. This is a desktop application with MCP (Mode
 MCPs are managed via command line in Claude Code:
 ```bash
 # Add an MCP
-claude mcp add pageant D:\claudeTools\mcp_pageant\server.js
+claude mcp add pageant /path/to/pageant/server.js
 
 # Remove an MCP
 claude mcp remove pageant
@@ -93,7 +93,7 @@ claude mcp remove pageant
 
 All MCP configurations are stored in:
 ```
-C:\Users\jgaut\.claude.json
+~/.claude.json
 ```
 
 ### Common MCP Development Pattern

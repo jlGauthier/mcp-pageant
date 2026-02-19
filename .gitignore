@@ -4,10 +4,12 @@ bun.lock
 node_modules/
 
 # Local configuration
+CLAUDE.md
 CLAUDE.local.md
 .env
 .env.local
 *.local
+.mcp.json
 .claude/
 
 # Plans and compiled personas

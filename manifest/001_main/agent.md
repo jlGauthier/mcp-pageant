@@ -1,3 +1,6 @@
+$AGENT_NAME=Grey
+$AGENT_COLOR=#708090
+
 @./manifest/020_pattern/01_clean_code.md
 @./manifest/040_output/02_narration/human_metaphors.md
 @./manifest/999_end/identity_commitment.md
