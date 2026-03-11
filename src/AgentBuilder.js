@@ -180,7 +180,33 @@ Read \`/CLAUDE.md\` for business domain and repository structure.
         results.push('Could not update .gitignore: ' + e.message);
       }
 
-      // 2. Create .mcp.json in agent directory (project-scoped MCPs)
+      // 2. Create .claude/settings.local.json with permissions
+      const claudeSettingsDir = path.join(agentPath, '.claude');
+      await fs.mkdir(claudeSettingsDir, { recursive: true });
+      const settingsLocalPath = path.join(claudeSettingsDir, 'settings.local.json');
+      const settingsLocalExists = await fs.access(settingsLocalPath).then(() => true).catch(() => false);
+
+      if (!settingsLocalExists) {
+        // Agent CWD is .pageant/<agent>/ — it needs access to the project root
+        const projectRelative = path.relative(agentPath, projectPath).split(path.sep).join('/');
+        const settingsLocal = {
+          permissions: {
+            additionalDirectories: [
+              projectRelative
+            ],
+            allow: [],
+            deny: [],
+            ask: []
+          },
+          enableAllProjectMcpServers: true
+        };
+        await fs.writeFile(settingsLocalPath, JSON.stringify(settingsLocal, null, 2) + '\n');
+        results.push(`Created .claude/settings.local.json with additionalDirectories: ["${projectRelative}"]`);
+      } else {
+        results.push('.claude/settings.local.json already exists, skipping');
+      }
+
+      // 3. Create .mcp.json in agent directory (project-scoped MCPs)
       const coreMcps = options.mcps || ['pageant'];
       const mcpConfig = {
         mcpServers: {}
