@@ -190,7 +190,7 @@ This lets you:
 Agents use **stable IDs** instead of file paths. Move or rename directories without breaking anything:
 
 ```markdown
-<!-- PAGEANT_ID: c--james--myproject--.pageant--fs -->
+<!-- PAGEANT_ID: c--user--myproject--.pageant--agent_fs -->
 ```
 
 **What this enables:**

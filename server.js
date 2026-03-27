@@ -13,6 +13,10 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs/promises';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+import http from 'http';
+import { spawn } from 'child_process';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
 import { AgentBuilder } from './src/AgentBuilder.js';
@@ -34,16 +38,23 @@ class PersonaServer {
     this.talentDescriptions = [];
     this.activeTimers = new Map(); // Maps slotKey -> timerId for cancellation
 
+    // --- Channel identity ---
+    this.channel = this._parseChannelIdentity();
+
     this.server = new Server(
       {
         name: 'mcp-pageant',
-        version: '2.0.0',
+        version: '3.0.0',
       },
       {
         capabilities: {
+          experimental: { 'claude/channel': {} },
           prompts: {},
           tools: {}
         },
+        instructions: this.channel.active
+          ? `Agent messages arrive as <channel source="mcp-pageant" from="name/role@project">. Use the send tool to message other agents. Use roster to see who is online. Your identity: ${this.channel.display}`
+          : undefined,
       }
     );
 
@@ -375,6 +386,184 @@ class PersonaServer {
     });
   }
 
+  // --- Channel identity ---
+
+  _parseChannelIdentity() {
+    const cwd = process.cwd().replace(/\\/g, '/');
+    let pageantId = null;
+    let agentName = null;
+
+    try {
+      const content = readFileSync(join(process.cwd(), 'CLAUDE.local.md'), 'utf8');
+      const idMatch = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
+      const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*(.+?)\s*-->/);
+      if (idMatch) pageantId = idMatch[1].trim();
+      if (nameMatch) agentName = nameMatch[1].trim();
+    } catch (_) {
+      // No CLAUDE.local.md
+    }
+
+    if (!agentName) {
+      console.error('[Pageant] No AGENT_NAME — channel inactive');
+      return { active: false };
+    }
+
+    // Derive project from .pageant parent or cwd
+    let project = 'standalone';
+    let role = '';
+
+    if (pageantId) {
+      // Parse PAGEANT_ID: c--user--project--.pageant--agent_role
+      // Project = segment before .pageant, Role = after underscore in last segment
+      const parts = pageantId.split('--');
+      const pageantIdx = parts.indexOf('.pageant');
+      if (pageantIdx > 0) {
+        project = parts[pageantIdx - 1];
+        const lastPart = parts[parts.length - 1];
+        const underIdx = lastPart.indexOf('_');
+        if (underIdx > 0) {
+          role = lastPart.slice(underIdx + 1);
+        }
+      } else {
+        // No .pageant in ID — use last meaningful segment, skip drive letter
+        project = parts.filter(p => p && p.length > 1).pop() || 'standalone';
+      }
+    }
+
+    const name = agentName.toLowerCase();
+    const display = role ? `${name}/${role}@${project}` : `${name}@${project}`;
+    const relayId = pageantId || name; // Full ID for relay registration
+
+    console.error(`[Pageant] Channel identity: ${display} (relay: ${relayId})`);
+
+    return { active: true, name, role, project, display, relayId, pageantId, agentPath: cwd };
+  }
+
+  // --- Channel relay helpers ---
+
+  _relayPost(relayPath, payload) {
+    const port = parseInt(process.env.RELAY_PORT || '7760', 10);
+    const host = process.env.RELAY_HOST || 'localhost';
+    return new Promise((resolve, reject) => {
+      const data = JSON.stringify(payload);
+      const req = http.request({
+        hostname: host, port, path: relayPath, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) }
+      }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch (_) { reject(new Error(`Relay returned invalid JSON: ${body}`)); }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error('Relay timeout')); });
+      req.write(data);
+      req.end();
+    });
+  }
+
+  _relayGet(relayPath) {
+    const port = parseInt(process.env.RELAY_PORT || '7760', 10);
+    const host = process.env.RELAY_HOST || 'localhost';
+    return new Promise((resolve, reject) => {
+      const req = http.get(`http://${host}:${port}${relayPath}`, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); }
+          catch (_) { reject(new Error(`Relay returned invalid JSON: ${body}`)); }
+        });
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => { req.destroy(); reject(new Error('Relay timeout')); });
+    });
+  }
+
+  _connectSSE() {
+    if (!this.channel.active) return;
+
+    const port = parseInt(process.env.RELAY_PORT || '7760', 10);
+    const host = process.env.RELAY_HOST || 'localhost';
+    const id = encodeURIComponent(this.channel.relayId);
+    const agentPath = encodeURIComponent(this.channel.agentPath);
+    const meta = encodeURIComponent(JSON.stringify({
+      name: this.channel.name,
+      role: this.channel.role,
+      project: this.channel.project,
+      display: this.channel.display
+    }));
+    const url = `http://${host}:${port}/subscribe/${id}?path=${agentPath}&meta=${meta}`;
+
+    let keepaliveTimer = null;
+    const resetKeepalive = (onTimeout) => {
+      if (keepaliveTimer) clearTimeout(keepaliveTimer);
+      keepaliveTimer = setTimeout(onTimeout, 45000);
+    };
+
+    const req = http.get(url, (res) => {
+      if (res.statusCode !== 200) {
+        console.error(`[Pageant] SSE connect failed: ${res.statusCode}`);
+        setTimeout(() => this._connectSSE(), 3000);
+        return;
+      }
+
+      console.error(`[Pageant] SSE subscribed as "${this.channel.display}"`);
+      let buffer = '';
+
+      const reconnect = () => {
+        if (keepaliveTimer) clearTimeout(keepaliveTimer);
+        res.destroy();
+        console.error('[Pageant] SSE disconnected, reconnecting...');
+        setTimeout(() => this._connectSSE(), 3000);
+      };
+
+      resetKeepalive(reconnect);
+
+      res.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (line.startsWith(': keepalive') || line.startsWith(': connected')) {
+            resetKeepalive(reconnect);
+            continue;
+          }
+          if (line.startsWith('data: ')) {
+            resetKeepalive(reconnect);
+            try {
+              const event = JSON.parse(line.slice(6));
+              this.server.notification({
+                method: 'notifications/claude/channel',
+                params: {
+                  content: event.content,
+                  meta: event.meta || {}
+                }
+              }).catch(err => {
+                console.error(`[Pageant] Channel notification error: ${err.message}`);
+              });
+            } catch (_) {
+              // Not valid JSON
+            }
+          }
+        }
+      });
+
+      res.on('end', reconnect);
+      res.on('error', (err) => {
+        console.error(`[Pageant] SSE error: ${err.message}`);
+        reconnect();
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error(`[Pageant] Relay connect error: ${err.message}, retrying...`);
+      setTimeout(() => this._connectSSE(), 3000);
+    });
+  }
+
   setupToolHandlers() {
     // Handle list tools request
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -521,6 +710,33 @@ Usage notes:
           })
         ];
 
+      // Channel tools
+      tools.push(
+        {
+          name: 'send',
+          description: 'Send a message to another agent. Arrives in their session as a <channel> event. Use name@project to target a specific agent (e.g. "agent@myproject"), or just name if unambiguous.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              to: { type: 'string', description: 'Target: name, name@project, or full relay ID' },
+              message: { type: 'string', description: 'Message content to send' }
+            },
+            required: ['to', 'message']
+          }
+        },
+        {
+          name: 'roster',
+          description: 'List connected agents. By default shows only agents in your project. Set all=true to see every agent across all projects.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              all: { type: 'boolean', description: 'Show all agents across all projects (default: false, shows only your project)' }
+            },
+            required: []
+          }
+        }
+      );
+
       return { tools };
     });
 
@@ -666,7 +882,45 @@ Usage notes:
               };
             }
             break;
-default:
+          case 'send': {
+            if (!this.channel.active) {
+              return { content: [{ type: 'text', text: 'Channel inactive — no AGENT_NAME in CLAUDE.local.md' }] };
+            }
+            try {
+              const result = await this._relayPost('/send', {
+                from: this.channel.relayId,
+                from_display: this.channel.display,
+                from_path: this.channel.agentPath,
+                to: args.to,
+                message: args.message
+              });
+              if (result.sent) {
+                return { content: [{ type: 'text', text: `Sent to ${result.to_display || args.to}` }] };
+              }
+              const online = (result.online || []).map(a => a.display || a.name || a).join(', ') || 'none';
+              return { content: [{ type: 'text', text: `${result.error}. Online: ${online}` }] };
+            } catch (err) {
+              return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
+            }
+          }
+          case 'roster': {
+            try {
+              const result = await this._relayGet('/agents');
+              let agents = result.agents;
+              if (!args.all && this.channel.active) {
+                agents = agents.filter(a => a.project === this.channel.project);
+              }
+              if (agents.length === 0) {
+                return { content: [{ type: 'text', text: args.all ? 'No agents connected' : `No agents in project "${this.channel.project}". Use roster(all=true) to see all.` }] };
+              }
+              const lines = agents.map(a => `- ${a.display || a.name} (${a.path})`);
+              const header = args.all ? 'All online agents' : `Agents in ${this.channel.project}`;
+              return { content: [{ type: 'text', text: `${header}:\n${lines.join('\n')}` }] };
+            } catch (err) {
+              return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
+            }
+          }
+          default:
             // Check custom tools from tools.json
             const customTool = this.customTools.find(t => t.name === name);
             if (customTool) {
@@ -789,6 +1043,40 @@ ${buildResult.results.join('\n')}`;
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('MCP Pageant server running (enhanced version with build_agent)');
+
+    // Start channel relay daemon if not already running
+    await this.ensureRelayDaemon();
+
+    // Connect to relay for channel messaging
+    this._connectSSE();
+  }
+
+  async ensureRelayDaemon() {
+    const RELAY_PORT = parseInt(process.env.RELAY_PORT || '7760', 10);
+
+    // Check if relay is already listening
+    const alive = await new Promise((resolve) => {
+      const req = http.get(`http://localhost:${RELAY_PORT}/health`, (res) => {
+        resolve(res.statusCode === 200);
+      });
+      req.on('error', () => resolve(false));
+      req.setTimeout(1000, () => { req.destroy(); resolve(false); });
+    });
+
+    if (alive) {
+      console.error(`[Pageant] Channel relay already running on :${RELAY_PORT}`);
+      return;
+    }
+
+    // Spawn relay as detached daemon
+    const relayPath = path.join(__dirname, 'relay.js');
+    const child = spawn('node', [relayPath], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, RELAY_PORT: String(RELAY_PORT) }
+    });
+    child.unref();
+    console.error(`[Pageant] Started channel relay daemon (PID ${child.pid}) on :${RELAY_PORT}`);
   }
 }
 

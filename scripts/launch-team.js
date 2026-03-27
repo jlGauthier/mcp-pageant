@@ -113,7 +113,18 @@ function discoverAgents(pageantDir) {
       }
     }
 
-    const vars = getAgentVars(agentPath);
+    let vars = getAgentVars(agentPath);
+
+    // Recompile if missing name or color
+    if (!vars.AGENT_NAME || !vars.AGENT_COLOR) {
+      console.log(`  Recompiling ${entry.name} (missing name/color)...`);
+      try {
+        execFileSync('node', [COMPILE_SCRIPT, agentPath], { stdio: 'pipe' });
+        vars = getAgentVars(agentPath);
+      } catch (e) {
+        console.error(`  Failed to recompile ${entry.name}: ${e.message}`);
+      }
+    }
 
     agents.push({
       dir: agentPath,
@@ -136,7 +147,7 @@ function printAgents(agents) {
 function launchWindows(agents) {
   const tabLines = agents.map((agent, i) => {
     const sep = i < agents.length - 1 ? ' `; `' : '';
-    return `   new-tab --title "${agent.name}" --suppressApplicationTitle -d "${agent.dir}" --tabColor '${agent.color}' cmd /k "${LAUNCH_CMD}"${sep}`;
+    return `   new-tab --title "${agent.name}" --suppressApplicationTitle -d "${agent.dir}" --tabColor '${agent.color}' cmd /k "set CLAUDECODE= && ${LAUNCH_CMD}"${sep}`;
   });
 
   const ps1Content = `wt -w new ${tabLines.join('\n')}`;

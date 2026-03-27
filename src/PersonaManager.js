@@ -40,10 +40,14 @@ export class PersonaManager extends PersonaCore {
 
     // Cache project directory name - calculated once at startup
     this.projectDirName = null;
+    // initialCwd: explicit working directory for this manager instance
+    this.initialCwd = options.initialCwd || null;
     // Skip initialization if override is provided OR if skipInit is true (for direct CLI use)
     this.projectDirNameInitialized = (this.overrideProjectDirName || options.skipInit)
       ? Promise.resolve()
-      : this.initializeProjectDirName();
+      : this.initialCwd
+        ? this.initializeProjectDirName(this.initialCwd)
+        : Promise.resolve(); // No cwd provided — will be initialized per-request
 
     // Build section map from manifest directories
     this._sectionMapCache = null;
@@ -86,6 +90,8 @@ export class PersonaManager extends PersonaCore {
 
   extractVariablesFromTemplate(templateContent) {
     // Extract variables from top of template (before first @ line)
+    // Variable lines match: ALPHANUMERIC_KEY=value (e.g., AGENT_NAME=Red)
+    // Skip inline override lines which start with digits (e.g., "005 - jobs/file_name: content")
     const lines = templateContent.split('\n');
     const varLines = [];
 
@@ -95,9 +101,13 @@ export class PersonaManager extends PersonaCore {
         // Hit first reference, stop parsing vars
         break;
       }
+      // Skip inline override lines (format: "NNN.NNN - path: content")
+      if (/^\d+/.test(trimmed) && trimmed.includes(' - ')) {
+        continue;
+      }
       if (trimmed && !trimmed.startsWith('#')) {
-        // Could be a variable line
-        if (trimmed.includes('=')) {
+        // Variable lines must be IDENTIFIER=value format
+        if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(trimmed)) {
           varLines.push(line);
         }
       }
@@ -164,40 +174,34 @@ export class PersonaManager extends PersonaCore {
   substituteVariables(text) {
     let result = text;
     for (const [key, value] of Object.entries(this.variables)) {
-      const pattern = new RegExp(`\\$\\{${key}\\}`, 'g');
+      // Escape regex special characters in key to prevent regex compilation errors
+      const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = new RegExp(`\\$\\{${escapedKey}\\}`, 'g');
       result = result.replace(pattern, value);
     }
     return result;
   }
   // Generate lowercase path-based ID from a directory path
   generatePathId(projectPath) {
-    const isWindows = process.platform === 'win32';
     let normalizedPath = projectPath.toLowerCase();
 
-    if (isWindows) {
-      // Windows: C:\Users\name -> c--users--name
-      normalizedPath = normalizedPath
-        .replace(/^([a-z]):/, '$1') // Remove colon from drive letter
-        .replace(/\\/g, path.sep); // Normalize backslashes
-    } else {
-      // Unix: /Users/name -> users--name
-      // Remove leading slash as it creates empty string in split
-      if (normalizedPath.startsWith('/')) {
-        normalizedPath = normalizedPath.substring(1);
-      }
-    }
+    // Normalize all slashes to forward slash, then strip drive colon and leading slash
+    normalizedPath = normalizedPath
+      .replace(/\\/g, '/')       // Backslash -> forward slash
+      .replace(/^([a-z]):/, '$1') // Remove drive colon (d: -> d)
+      .replace(/^\//, '');        // Remove leading slash (unix paths)
 
     const pathParts = normalizedPath
-      .split(path.sep)
+      .split('/')
       .filter(part => part.length > 0);
 
     return pathParts.join('--');
   }
 
   // Extract PAGEANT_ID from CLAUDE.local.md
-  async extractPageantId() {
+  async extractPageantId(cwd) {
     try {
-      const claudeLocalPath = path.join(process.cwd(), 'CLAUDE.local.md');
+      const claudeLocalPath = path.join(cwd, 'CLAUDE.local.md');
       const content = await fs.readFile(claudeLocalPath, 'utf8');
       const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
       return match ? match[1].trim() : null;
@@ -213,7 +217,8 @@ export class PersonaManager extends PersonaCore {
       return; // Skip writes in test mode
     }
 
-    const claudeLocalPath = path.join(targetDir || process.cwd(), 'CLAUDE.local.md');
+    if (!targetDir) throw new Error('writePageantId requires targetDir');
+    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
     try {
       let content = await fs.readFile(claudeLocalPath, 'utf8');
 
@@ -252,7 +257,8 @@ export class PersonaManager extends PersonaCore {
       return; // No AGENT_NAME variable defined
     }
 
-    const claudeLocalPath = path.join(targetDir || process.cwd(), 'CLAUDE.local.md');
+    if (!targetDir) throw new Error('writeAgentName requires targetDir');
+    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
     try {
       let content = await fs.readFile(claudeLocalPath, 'utf8');
 
@@ -303,24 +309,24 @@ export class PersonaManager extends PersonaCore {
   }
 
   // Initialize project directory name once at startup
-  async initializeProjectDirName() {
-    const currentPath = process.cwd();
+  async initializeProjectDirName(cwd) {
+    const currentPath = cwd;
     const currentPathId = this.generatePathId(currentPath);
 
     // Try to read existing ID from CLAUDE.local.md
-    const existingId = await this.extractPageantId();
+    const existingId = await this.extractPageantId(cwd);
 
     if (!existingId) {
       // No ID exists - check if a plan directory exists with case-insensitive match
       const matchingDir = await this.findPlanDirectory(currentPathId);
       if (matchingDir) {
         // Found existing directory with different case - use it
-        await this.writePageantId(currentPathId);
+        await this.writePageantId(currentPathId, cwd);
         this.projectDirName = matchingDir;
         return;
       }
       // No existing directory - new project, use current path ID
-      await this.writePageantId(currentPathId);
+      await this.writePageantId(currentPathId, cwd);
       this.projectDirName = currentPathId;
       return;
     }
@@ -344,11 +350,21 @@ export class PersonaManager extends PersonaCore {
       const oldPlanPath = path.join(this.plansDir, oldPlanDir);
       const newPlanPath = path.join(this.plansDir, currentPathId);
 
+      // Check if destination already exists — if so, use it instead of renaming
+      const destExists = await fs.access(newPlanPath).then(() => true).catch(() => false);
+      if (destExists) {
+        // Destination already has a plan — just update the ID, don't clobber
+        await this.writePageantId(currentPathId, cwd);
+        console.error(`[Pageant] Destination plan already exists, using: ${currentPathId} (stale ID: ${existingId})`);
+        this.projectDirName = currentPathId;
+        return;
+      }
+
       // Move the entire plan directory
       await fs.rename(oldPlanPath, newPlanPath);
 
       // Update ID in CLAUDE.local.md
-      await this.writePageantId(currentPathId);
+      await this.writePageantId(currentPathId, cwd);
 
       console.error(`[Pageant] Moved plan: ${oldPlanDir} → ${currentPathId}`);
       this.projectDirName = currentPathId;
@@ -358,13 +374,13 @@ export class PersonaManager extends PersonaCore {
       // Check if current path already has a directory
       const matchingDir = await this.findPlanDirectory(currentPathId);
       if (matchingDir) {
-        await this.writePageantId(currentPathId);
+        await this.writePageantId(currentPathId, cwd);
         this.projectDirName = matchingDir;
         return;
       }
 
       // Create new plan directory with current path ID
-      await this.writePageantId(currentPathId);
+      await this.writePageantId(currentPathId, cwd);
 
       console.error(`[Pageant] New instance: ${currentPathId} (previous ID: ${existingId})`);
       this.projectDirName = currentPathId;
@@ -874,8 +890,7 @@ export class PersonaManager extends PersonaCore {
       throw error;
     }
   }
-  async handleAdd({ section, subsection, partial }) {
-    const projectPath = process.cwd();
+  async handleAdd({ section, subsection, partial, projectPath }) {
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 
@@ -1091,8 +1106,7 @@ export class PersonaManager extends PersonaCore {
    * @param {Object} params - { section, subsection, partial, slotKey, expiresAt }
    * @returns {Object} MCP response
    */
-  async handleTemporaryAdd({ section, subsection, partial, slotKey, expiresAt }) {
-    const projectPath = process.cwd();
+  async handleTemporaryAdd({ section, subsection, partial, slotKey, expiresAt, projectPath }) {
 
     // Use handleAdd logic to resolve and find the file
     const sections = await this.multiManifest.listSections();
@@ -1246,8 +1260,7 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
-  async handleRemove({ section, subsection, partial }) {
-    const projectPath = process.cwd();
+  async handleRemove({ section, subsection, partial, projectPath }) {
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 
@@ -1434,8 +1447,7 @@ export class PersonaManager extends PersonaCore {
     };
   }
 
-  async handleTalent({ talent_name, time_minutes = 5 }) {
-    const projectPath = process.cwd();
+  async handleTalent({ talent_name, time_minutes = 5, projectPath }) {
 
     // Add the talent from 015_talents section
     const addResult = await this.handleAdd({
@@ -1470,8 +1482,7 @@ export class PersonaManager extends PersonaCore {
   }
 
 
-  async handleSetVar({ variable, value }) {
-    const projectPath = process.cwd();
+  async handleSetVar({ variable, value, projectPath }) {
     const templatePath = this.getTemplatePath();
 
     // Ensure template directory exists
@@ -1748,10 +1759,9 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
-  async handleInspect() {
+  async handleInspect(projectPath) {
     try {
       const templatePath = this.getTemplatePath();
-      const projectPath = process.cwd();
 
       // Trigger compilation to clean expired components before reading template
       await this.compilePersona(projectPath);
@@ -1887,8 +1897,7 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
-  async handleThrift({ slot_key, virtual_path, content, expiresAt }) {
-    const projectPath = process.cwd();
+  async handleThrift({ slot_key, virtual_path, content, expiresAt, projectPath }) {
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 

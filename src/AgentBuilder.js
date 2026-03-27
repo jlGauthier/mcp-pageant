@@ -128,7 +128,8 @@ export class AgentBuilder {
       }
 
       // Create agent in project's .pageant directory
-      const projectPath = process.cwd();
+      if (!options.projectPath) throw new Error('projectPath is required');
+      const projectPath = options.projectPath;
       const projectName = path.basename(projectPath);
       const pageantDir = path.join(projectPath, '.pageant');
       const agentPath = path.join(pageantDir, agentName);
@@ -489,18 +490,9 @@ ${components.join('\n')}
   }
 
   async compilePersona(personaPlanDir, agentPath) {
-    // Like, use the PersonaManager to properly compile!
     const { PersonaManager } = await import('./PersonaManager.js');
-    const manager = new PersonaManager(this.baseDir);
-
-    // Set the project path for proper compilation
-    const originalCwd = process.cwd();
-    process.chdir(agentPath);
-
-    try {
-      await manager.compilePersona(agentPath);
-    } finally {
-      process.chdir(originalCwd);
-    }
+    const manager = new PersonaManager(this.baseDir, { initialCwd: agentPath });
+    await manager.projectDirNameInitialized;
+    await manager.compilePersona(agentPath);
   }
 }

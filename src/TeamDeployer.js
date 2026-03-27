@@ -130,17 +130,14 @@ export class TeamDeployer {
     for (const agentName of validation.agents) {
       const agentPath = path.join(pageantDir, agentName);
 
-      // Change to agent directory for compilation
-      const originalCwd = process.cwd();
-      process.chdir(agentPath);
-
       try {
-        await personaManager.compilePersona(agentPath);
+        // Initialize PersonaManager for this agent's directory
+        const agentManager = new PersonaManager(this.baseDir, { initialCwd: agentPath });
+        await agentManager.projectDirNameInitialized;
+        await agentManager.compilePersona(agentPath);
         results.push(`  ✓ Compiled ${agentName} persona with new ID`);
       } catch (error) {
         results.push(`  ✗ Failed to compile ${agentName}: ${error.message}`);
-      } finally {
-        process.chdir(originalCwd);
       }
     }
 

@@ -43,7 +43,7 @@ mcp_pageant/
 ### compile-remote.js
 Compile pageant for an agent in another directory without cd-ing there:
 ```bash
-node D:/claudeTools/mcp_pageant/scripts/compile-remote.js "C:/James/thenuts/.pageant/TW"
+node D:/claudeTools/mcp_pageant/scripts/compile-remote.js "C:/project/.pageant/agent"
 ```
 
 ## Core Architecture
@@ -350,7 +350,7 @@ You communicate clearly and precisely...
 
 ↓ Write to CLAUDE.local.md with PAGEANT_ID
 
-<!-- PAGEANT_ID: c--james--myproject -->
+<!-- PAGEANT_ID: c--user--myproject -->
 
 # Main
 ### Guidelines
@@ -370,15 +370,15 @@ You communicate clearly and precisely...
 **Solution:** Stable IDs embedded in CLAUDE.local.md
 
 ```markdown
-<!-- PAGEANT_ID: c--james--feudle--.pageant--fs -->
-<!-- PAGEANT_ROOT: D:\claudeTools -->
+<!-- PAGEANT_ID: c--user--project--.pageant--agent_role -->
+<!-- PAGEANT_ROOT: D:\tools -->
 ```
 
 **ID Generation:**
 ```javascript
 generateIdFromPath(path) {
   // Lowercase, replace separators, remove special chars
-  // C:\James\Feudle\.pageant\FS → c--james--feudle--.pageant--fs
+  // C:\User\Project\.pageant\Agent → c--user--project--.pageant--agent
 
   return path
     .toLowerCase()
