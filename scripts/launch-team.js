@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * launch-team.js — Launch all agents in a .pageant directory as terminal tabs
  *
@@ -90,7 +89,43 @@ function getAgentVars(agentPath) {
   return vars;
 }
 
+function buildAgent(agentPath, dirName) {
+  if (!fs.existsSync(path.join(agentPath, 'CLAUDE.local.md'))) {
+    console.log(`  Compiling ${dirName}...`);
+    try {
+      execFileSync('node', [COMPILE_SCRIPT, agentPath], { stdio: 'pipe' });
+    } catch (e) {
+      console.error(`  Failed to compile ${dirName}: ${e.message}`);
+    }
+  }
+
+  let vars = getAgentVars(agentPath);
+
+  if (!vars.AGENT_NAME || !vars.AGENT_COLOR) {
+    console.log(`  Recompiling ${dirName} (missing name/color)...`);
+    try {
+      execFileSync('node', [COMPILE_SCRIPT, agentPath], { stdio: 'pipe' });
+      vars = getAgentVars(agentPath);
+    } catch (e) {
+      console.error(`  Failed to recompile ${dirName}: ${e.message}`);
+    }
+  }
+
+  return {
+    dir: agentPath,
+    dirName,
+    name: vars.AGENT_NAME || dirName,
+    color: vars.AGENT_COLOR || DEFAULT_COLOR
+  };
+}
+
 function discoverAgents(pageantDir) {
+  // Flat solo agent: the directory itself is the agent
+  if (fs.existsSync(path.join(pageantDir, 'CLAUDE.local.md'))) {
+    return [buildAgent(pageantDir, path.basename(pageantDir))];
+  }
+
+  // Team mode: scan subdirectories
   const agents = [];
   const entries = fs.readdirSync(pageantDir, { withFileTypes: true });
 
@@ -99,39 +134,9 @@ function discoverAgents(pageantDir) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
 
     const agentPath = path.join(pageantDir, entry.name);
-    const hasClaude = fs.existsSync(path.join(agentPath, 'CLAUDE.md')) ||
-                      fs.existsSync(path.join(agentPath, 'CLAUDE.local.md'));
-    if (!hasClaude) continue;
+    if (!fs.existsSync(path.join(agentPath, 'CLAUDE.local.md'))) continue;
 
-    // Compile if not already compiled
-    if (!fs.existsSync(path.join(agentPath, 'CLAUDE.local.md'))) {
-      console.log(`  Compiling ${entry.name}...`);
-      try {
-        execFileSync('node', [COMPILE_SCRIPT, agentPath], { stdio: 'pipe' });
-      } catch (e) {
-        console.error(`  Failed to compile ${entry.name}: ${e.message}`);
-      }
-    }
-
-    let vars = getAgentVars(agentPath);
-
-    // Recompile if missing name or color
-    if (!vars.AGENT_NAME || !vars.AGENT_COLOR) {
-      console.log(`  Recompiling ${entry.name} (missing name/color)...`);
-      try {
-        execFileSync('node', [COMPILE_SCRIPT, agentPath], { stdio: 'pipe' });
-        vars = getAgentVars(agentPath);
-      } catch (e) {
-        console.error(`  Failed to recompile ${entry.name}: ${e.message}`);
-      }
-    }
-
-    agents.push({
-      dir: agentPath,
-      dirName: entry.name,
-      name: vars.AGENT_NAME || entry.name,
-      color: vars.AGENT_COLOR || DEFAULT_COLOR
-    });
+    agents.push(buildAgent(agentPath, entry.name));
   }
 
   return agents;
@@ -144,13 +149,22 @@ function printAgents(agents) {
   }
 }
 
-function launchWindows(agents) {
+function windowNameFromPageantDir(pageantDir) {
+  const resolved = path.resolve(pageantDir);
+  const base = path.basename(resolved);
+  const projectDir = base === '.pageant' ? path.dirname(resolved) : resolved;
+  return path.basename(projectDir).toLowerCase();
+}
+
+function launchWindows(agents, pageantDir) {
   const tabLines = agents.map((agent, i) => {
     const sep = i < agents.length - 1 ? ' `; `' : '';
     return `   new-tab --title "${agent.name}" --suppressApplicationTitle -d "${agent.dir}" --tabColor '${agent.color}' cmd /k "set CLAUDECODE= && ${LAUNCH_CMD}"${sep}`;
   });
 
-  const ps1Content = `wt -w new ${tabLines.join('\n')}`;
+  const windowName = windowNameFromPageantDir(pageantDir);
+  const wtPath = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WindowsApps', 'wt.exe');
+  const ps1Content = `& "${wtPath}" -w ${windowName} ${tabLines.join('\n')}`;
   const tmpFile = path.join(process.env.TEMP || 'C:\\Windows\\Temp', 'launch-team-tmp.ps1');
   fs.writeFileSync(tmpFile, ps1Content);
   execSync(`powershell -ExecutionPolicy Bypass -File "${tmpFile}"`, { stdio: 'inherit' });
@@ -188,7 +202,7 @@ function launchLinux(agents) {
   }
 }
 
-function launchAgents(agents) {
+function launchAgents(agents, pageantDir) {
   if (agents.length === 0) {
     console.error('No agents found.');
     process.exit(1);
@@ -198,7 +212,7 @@ function launchAgents(agents) {
 
   const platform = process.platform;
   if (platform === 'win32') {
-    launchWindows(agents);
+    launchWindows(agents, pageantDir);
   } else if (platform === 'darwin') {
     launchMac(agents);
   } else {
@@ -206,27 +220,33 @@ function launchAgents(agents) {
   }
 }
 
-// --- Main ---
-const args = process.argv.slice(2);
-if (args.length === 0) {
-  console.error('Usage: node launch-team.js <pageant-dir> [agent-name]');
-  process.exit(1);
+export { discoverAgents, buildAgent, getAgentVars };
+
+const entryPath = process.argv[1] || '';
+const isMain = entryPath && import.meta.url.endsWith(path.basename(entryPath));
+
+if (isMain) {
+  const args = process.argv.slice(2);
+  if (args.length === 0) {
+    console.error('Usage: node launch-team.js <pageant-dir> [agent-name]');
+    process.exit(1);
+  }
+
+  const pageantDir = path.resolve(args[0]);
+  if (!fs.existsSync(pageantDir)) {
+    console.error(`Directory not found: ${pageantDir}`);
+    process.exit(1);
+  }
+
+  const filterAgent = args[1] || null;
+  let agents = discoverAgents(pageantDir);
+
+  if (filterAgent) {
+    agents = agents.filter(a =>
+      a.name.toLowerCase() === filterAgent.toLowerCase() ||
+      a.dirName.toLowerCase() === filterAgent.toLowerCase()
+    );
+  }
+
+  launchAgents(agents, pageantDir);
 }
-
-const pageantDir = path.resolve(args[0]);
-if (!fs.existsSync(pageantDir)) {
-  console.error(`Directory not found: ${pageantDir}`);
-  process.exit(1);
-}
-
-const filterAgent = args[1] || null;
-let agents = discoverAgents(pageantDir);
-
-if (filterAgent) {
-  agents = agents.filter(a =>
-    a.name.toLowerCase() === filterAgent.toLowerCase() ||
-    a.dirName.toLowerCase() === filterAgent.toLowerCase()
-  );
-}
-
-launchAgents(agents);

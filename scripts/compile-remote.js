@@ -43,73 +43,18 @@ async function compileRemote(targetDir) {
     throw error;
   }
 
-  // Check for CLAUDE.local.md to verify it's a pageant agent
   const claudeLocalPath = path.join(absoluteTarget, 'CLAUDE.local.md');
-  let hasExistingPersona = false;
-  let existingId = null;
 
-  try {
-    const content = await fs.readFile(claudeLocalPath, 'utf8');
-    hasExistingPersona = true;
-    const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
-    existingId = match ? match[1].trim() : null;
-    console.log(`📄  Found existing CLAUDE.local.md`);
-    if (existingId) {
-      console.log(`🔑  PAGEANT_ID: ${existingId}`);
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    console.log(`📄  No existing CLAUDE.local.md (will be created)`);
-  }
-
-  // Create PersonaManager with mcp_pageant as base
+  // Create PersonaManager with mcp_pageant as base, skip auto-init
   const baseDir = path.resolve(__dirname, '..');
-  const manager = new PersonaManager(baseDir);
-
-  // Wait for initialization
-  await manager.projectDirNameInitialized;
+  const manager = new PersonaManager(baseDir, { skipInit: true });
   await manager.variablesLoaded;
 
-  // Generate the ID for the target directory (same logic as PersonaManager)
-  const targetId = manager.generatePathId(absoluteTarget);
-  console.log(`🎯  Target ID: ${targetId}`);
+  // Resolve agent ID using unified resolution (handles copy detection)
+  const resolvedId = await manager.initializeForRemote(absoluteTarget);
+  console.log(`🔑  Resolved ID: ${resolvedId}`);
 
-  // Determine which ID to use - prefer targetId if it has a plan
-  let useId = null;
-  const targetPlanDir = path.join(manager.plansDir, targetId);
-  const existingPlanDir = existingId ? path.join(manager.plansDir, existingId) : null;
-
-  // Check if targetId has a plan
-  try {
-    await fs.access(path.join(targetPlanDir, 'template.md'));
-    useId = targetId;
-    console.log(`📁  Plan found for target ID: ${targetPlanDir}`);
-  } catch {
-    // targetId doesn't have a plan, try existingId
-    if (existingId && existingId !== targetId) {
-      try {
-        await fs.access(path.join(existingPlanDir, 'template.md'));
-        useId = existingId;
-        console.log(`📁  Plan found for existing ID: ${existingPlanDir}`);
-      } catch {
-        // Neither has a plan
-      }
-    }
-  }
-
-  if (!useId) {
-    console.error(`❌  No plan directory found for this agent.`);
-    console.error(`   Looked for: ${targetId}`);
-    if (existingId && existingId !== targetId) {
-      console.error(`   Also tried: ${existingId}`);
-    }
-    process.exit(1);
-  }
-
-  manager.overrideProjectDirName = useId;
-
-  // Reload variables now that we know the correct project directory
-  // (loadVariables runs at construction before overrideProjectDirName is set)
+  // Reload variables for the resolved project
   await manager.loadVariables();
 
   // Check template exists

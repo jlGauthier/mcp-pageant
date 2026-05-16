@@ -11,8 +11,7 @@ mcp_pageant/
 │   ├── FuzzyMatch.js            # Fuzzy matching utility (135 lines)
 │   ├── persona-core.js          # Template operations (251 lines)
 │   ├── formatMarkdown.js        # Markdown formatting (151 lines)
-│   ├── WebEditor.js             # Web UI backend (352 lines)
-│   └── AgentBuilder.js          # Agent creation (241 lines)
+│   └── WebEditor.js             # Web UI backend (352 lines)
 ├── manifest/                    # Component library
 │   ├── 001_main/               # Core personalities
 │   ├── 005_jobs/               # Professional roles
@@ -415,26 +414,7 @@ if (existingId && this.isTemplateInUse(existingId)) {
 
 ### Project-Scoped MCPs
 
-**AgentBuilder creates `.mcp.json` in each agent directory** (AgentBuilder.js:73-123)
-
-```javascript
-// Creates .mcp.json with absolute paths to MCP servers
-const mcpConfig = {
-  mcpServers: {
-    pageant: {
-      type: "stdio",
-      command: "bun",
-      args: ["D:\\claudeTools\\mcp_pageant\\server.js"],
-      env: {}
-    }
-  }
-};
-
-await fs.writeFile(
-  path.join(agentPath, '.mcp.json'),
-  JSON.stringify(mcpConfig, null, 2)
-);
-```
+Each deployed agent carries a project-scoped `.mcp.json` alongside its `CLAUDE.local.md`. New agents are created by copying an existing agent directory, not generated.
 
 **Claude Code MCP Resolution Order:**
 1. `.mcp.json` in current working directory (highest priority)
@@ -444,29 +424,11 @@ await fs.writeFile(
 ```
 .pageant/
 ├── fs/
-│   ├── .mcp.json           # Agent-specific MCPs (auto-generated)
+│   ├── .mcp.json           # Agent-specific MCPs (copied from template)
 │   ├── CLAUDE.local.md     # Persona (with PAGEANT_ID)
 │   └── .claude/
 │       └── settings.local.json
 ```
-
-**Supported MCPs** (hardcoded in AgentBuilder.js:80-105):
-- `pageant` - Persona management
-- `lace` - Web scraping, code analysis
-- `selfie` - Image generation
-- `utils` - Utilities
-
-**Benefits:**
-- No global `.claude.json` pollution
-- Each agent carries its own MCP config
-- MCPs travel with agent directory
-- Safe to copy agents between projects
-- No risk of corrupting global config
-
-**Limitations:**
-- Absolute paths not portable across machines
-- Must rebuild agents on new machine or manually update paths
-- New MCPs require code change to AgentBuilder.js
 
 ## Manifest System
 

@@ -1,3 +1,5 @@
+$AGENT_JOB=qa-runner
+
 # QA Plan Runner
 
 You execute QA plans one at a time. Each plan is loaded into your system prompt via pageant.

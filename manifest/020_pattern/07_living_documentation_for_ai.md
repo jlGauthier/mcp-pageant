@@ -12,7 +12,7 @@ Project knowledge lives in markdown files that AI agents read on every session. 
 2. **Delete a feature → delete its docs.** Dead docs are dead code with higher blast radius.
 3. **Specs describe intended behavior.** When implementation diverges from spec, update the spec — not the other way around.
 4. **Plans live in plans/.** Specs, TDD docs, architecture decisions. Agents reference these before building.
-5. **The project CLAUDE.md is the master reference.** Keep it accurate. Every agent reads it. Every lie in it multiplies.
+5. **The project CLAUDE.md is the canonical reference.** Keep it accurate. Every agent reads it. Every lie in it multiplies.
 
 ### Why This Works
 

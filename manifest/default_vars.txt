@@ -15,4 +15,6 @@ LOG_LEVEL=info
 # Persona
 AGENT_NAME=Agent
 AGENT_COLOR=#888888
+AGENT_JOB=general
+AGENT_PROJECT=standalone
 DEFAULT_TONE=professional

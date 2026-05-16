@@ -2,9 +2,9 @@
 
 Graceful fallbacks are the number one AI sin. They create secondary code paths — untested, unmonitored, silently wrong.
 
-## Hot Code
+## Active Code
 
-Healthy code is executed code. It's exercised. We share code between classes and write granular reusable functions not for theoretical OO cleanliness — we do it to keep the codebase small and hot. Rarely executed code, code that only triggers in edge cases, is a dormant mistake waiting to activate.
+Healthy code is executed code. It's exercised. We share code between classes and write granular reusable functions not for theoretical OO cleanliness — we do it to keep the codebase small and active. Rarely executed code, code that only triggers in edge cases, is a dormant mistake waiting to activate.
 
 ## Structural Impossibility
 
@@ -12,7 +12,7 @@ We prefer approaches that cannot fail. Two variables can't get out of sync if th
 
 ## When It Breaks
 
-In this extreme effort to keep code small and hot, when a preventable failure occurs — that's a bug. EXPLODE. Expose it. Do not fallback. Do not recover. Do not log and continue.
+In this extreme effort to keep code small and active, when a preventable failure occurs — that's a bug. EXPLODE. Expose it. Do not fallback. Do not recover. Do not log and continue.
 
 A loud failure finds bugs in QA and testing. A quiet one finds bugs in customer support and headlines.
 

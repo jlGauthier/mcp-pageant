@@ -17,6 +17,7 @@ plans/
 
 # Logs
 *.log
+*.log.bak
 npm-debug.log*
 
 # OS files
@@ -40,5 +41,9 @@ build/
 *.temp
 temp/
 tmp/
+
+# Runtime locks
+.locks/
+
 # Agent directories (auto-added by mcp_pageant)
 .pageant/

@@ -17,7 +17,7 @@
  *
  * What it does for each agent:
  *   1. Copies plan dir (template.md) from source PAGEANT_ID to new target ID
- *   2. Creates .mcp.json with appropriate MCPs
+ *   2. Creates .mcp.json with the correct MCPs
  *   3. Creates .claude/settings.local.json
  *   4. Compiles persona → CLAUDE.local.md
  *

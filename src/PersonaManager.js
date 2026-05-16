@@ -90,7 +90,7 @@ export class PersonaManager extends PersonaCore {
 
   extractVariablesFromTemplate(templateContent) {
     // Extract variables from top of template (before first @ line)
-    // Variable lines match: ALPHANUMERIC_KEY=value (e.g., AGENT_NAME=Red)
+    // Variable lines match: ALPHANUMERIC_KEY=value (e.g., AGENT_NAME=Grey)
     // Skip inline override lines which start with digits (e.g., "005 - jobs/file_name: content")
     const lines = templateContent.split('\n');
     const varLines = [];
@@ -293,6 +293,132 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
+  // Write AGENT_JOB as HTML comment to CLAUDE.local.md
+  // Falls back to deriving from path suffix if no explicit variable
+  // Removes stale comment when job resolves to nothing
+  async writeAgentJob(targetDir = null) {
+    if (this.testMode) return;
+
+    let job = this.variables['AGENT_JOB'];
+
+    // Fallback: derive from path suffix (e.g., red_fs → fs)
+    if (!job || job === 'general') {
+      const dirName = this.getProjectDirName();
+      const parts = dirName.split('--');
+      const lastPart = parts[parts.length - 1];
+      const underIdx = lastPart.indexOf('_');
+      if (underIdx > 0) {
+        job = lastPart.slice(underIdx + 1);
+      }
+    }
+
+    if (!targetDir) throw new Error('writeAgentJob requires targetDir');
+    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
+    try {
+      let content = await fs.readFile(claudeLocalPath, 'utf8');
+
+      // No job resolved — remove stale comment if present
+      if (!job || job === 'general') {
+        if (content.match(/<!--\s*AGENT_JOB:/)) {
+          content = content.replace(/<!--\s*AGENT_JOB:\s*.+?\s*-->\n?/, '');
+          await fs.writeFile(claudeLocalPath, content, 'utf8');
+        }
+        return;
+      }
+
+      const comment = `<!-- AGENT_JOB: ${job} -->`;
+
+      if (content.match(/<!--\s*AGENT_JOB:/)) {
+        content = content.replace(/<!--\s*AGENT_JOB:\s*.+?\s*-->/, comment);
+      } else {
+        // Insert after AGENT_NAME, or after PAGEANT_ID, or prepend
+        const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*.+?\s*-->/);
+        if (nameMatch) {
+          content = content.replace(nameMatch[0], `${nameMatch[0]}\n${comment}`);
+        } else {
+          const idMatch = content.match(/<!--\s*PAGEANT_ID:\s*.+?\s*-->/);
+          if (idMatch) {
+            content = content.replace(idMatch[0], `${idMatch[0]}\n${comment}`);
+          } else {
+            content = `${comment}\n\n${content}`;
+          }
+        }
+      }
+
+      await fs.writeFile(claudeLocalPath, content, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      console.error('Error writing AGENT_JOB:', error);
+      throw error;
+    }
+  }
+
+  // Write AGENT_PROJECT as HTML comment to CLAUDE.local.md
+  // Falls back to deriving from PAGEANT_ID path structure
+  // Removes stale comment when project resolves to nothing
+  async writeAgentProject(targetDir = null) {
+    if (this.testMode) return;
+
+    let project = this.variables['AGENT_PROJECT'];
+
+    // Fallback: derive from projectDirName
+    if (!project || project === 'standalone') {
+      const dirName = this.getProjectDirName();
+      const parts = dirName.split('--');
+      const pageantIdx = parts.indexOf('.pageant');
+      if (pageantIdx > 0) {
+        project = parts[pageantIdx - 1];
+      } else {
+        project = parts.filter(p => p && p.length > 1).pop() || 'standalone';
+      }
+    }
+
+    if (!targetDir) throw new Error('writeAgentProject requires targetDir');
+    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
+    try {
+      let content = await fs.readFile(claudeLocalPath, 'utf8');
+
+      // No project resolved — remove stale comment if present
+      if (!project || project === 'standalone') {
+        if (content.match(/<!--\s*AGENT_PROJECT:/)) {
+          content = content.replace(/<!--\s*AGENT_PROJECT:\s*.+?\s*-->\n?/, '');
+          await fs.writeFile(claudeLocalPath, content, 'utf8');
+        }
+        return;
+      }
+
+      const comment = `<!-- AGENT_PROJECT: ${project} -->`;
+
+      if (content.match(/<!--\s*AGENT_PROJECT:/)) {
+        content = content.replace(/<!--\s*AGENT_PROJECT:\s*.+?\s*-->/, comment);
+      } else {
+        // Insert after AGENT_JOB, or AGENT_NAME, or PAGEANT_ID, or prepend
+        const jobMatch = content.match(/<!--\s*AGENT_JOB:\s*.+?\s*-->/);
+        if (jobMatch) {
+          content = content.replace(jobMatch[0], `${jobMatch[0]}\n${comment}`);
+        } else {
+          const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*.+?\s*-->/);
+          if (nameMatch) {
+            content = content.replace(nameMatch[0], `${nameMatch[0]}\n${comment}`);
+          } else {
+            const idMatch = content.match(/<!--\s*PAGEANT_ID:\s*.+?\s*-->/);
+            if (idMatch) {
+              content = content.replace(idMatch[0], `${idMatch[0]}\n${comment}`);
+            } else {
+              content = `${comment}\n\n${content}`;
+            }
+          }
+        }
+      }
+
+      await fs.writeFile(claudeLocalPath, content, 'utf8');
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      console.error('Error writing AGENT_PROJECT:', error);
+      throw error;
+    }
+  }
+
   // Find plan directory with case-insensitive matching
   async findPlanDirectory(targetId) {
     try {
@@ -308,84 +434,88 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
+  // Unified agent ID resolution.
+  // Handles new agents, ID matches, moves, copies, and orphaned IDs.
+  // Options:
+  //   allowMove: rename plan directory when ID mismatches path (startup mode)
+  //   allowCopy: copy plan directory for cloned agents (remote mode)
+  async resolveAgentId(targetDir, options = {}) {
+    const { allowMove = false, allowCopy = true } = options;
+    const targetPathId = this.generatePathId(targetDir);
+    const existingId = await this.extractPageantId(targetDir);
+
+    // Case 1: No existing ID — new agent
+    if (!existingId) {
+      const matchingDir = await this.findPlanDirectory(targetPathId);
+      if (matchingDir) {
+        await this.writePageantId(targetPathId, targetDir);
+        return matchingDir;
+      }
+      await this.writePageantId(targetPathId, targetDir);
+      return targetPathId;
+    }
+
+    // Case 2: ID matches path (case-insensitive) — standard case
+    if (existingId.toLowerCase() === targetPathId.toLowerCase()) {
+      const matchingDir = await this.findPlanDirectory(targetPathId);
+      return matchingDir || targetPathId;
+    }
+
+    // Case 3: ID mismatch — move or copy
+    const oldPlanDir = await this.findPlanDirectory(existingId);
+    const oldTemplateExists = oldPlanDir
+      ? await fs.access(path.join(this.plansDir, oldPlanDir, 'template.md')).then(() => true).catch(() => false)
+      : false;
+
+    const targetPlanDir = await this.findPlanDirectory(targetPathId);
+    const targetTemplateExists = targetPlanDir
+      ? await fs.access(path.join(this.plansDir, targetPlanDir, 'template.md')).then(() => true).catch(() => false)
+      : false;
+
+    // Sub-case 3a: Target already has a plan — use it
+    if (targetTemplateExists) {
+      await this.writePageantId(targetPlanDir || targetPathId, targetDir);
+      console.error(`[Pageant] Using existing plan: ${targetPlanDir || targetPathId} (stale ID: ${existingId})`);
+      return targetPlanDir || targetPathId;
+    }
+
+    // Sub-case 3b: Old plan exists, target doesn't
+    if (oldTemplateExists) {
+      if (allowMove) {
+        const oldPlanPath = path.join(this.plansDir, oldPlanDir);
+        const newPlanPath = path.join(this.plansDir, targetPathId);
+        await fs.rename(oldPlanPath, newPlanPath);
+        await this.writePageantId(targetPathId, targetDir);
+        console.error(`[Pageant] Moved plan: ${oldPlanDir} → ${targetPathId}`);
+        return targetPathId;
+      }
+      if (allowCopy) {
+        const oldPlanPath = path.join(this.plansDir, oldPlanDir);
+        const newPlanPath = path.join(this.plansDir, targetPathId);
+        await fs.cp(oldPlanPath, newPlanPath, { recursive: true });
+        await this.writePageantId(targetPathId, targetDir);
+        console.error(`[Pageant] Copied plan: ${oldPlanDir} → ${targetPathId}`);
+        return targetPathId;
+      }
+      // Neither move nor copy — use old ID as-is
+      return oldPlanDir;
+    }
+
+    // Sub-case 3c: No plan anywhere — new instance with orphaned ID
+    const matchingDir = await this.findPlanDirectory(targetPathId);
+    if (matchingDir) {
+      await this.writePageantId(targetPathId, targetDir);
+      return matchingDir;
+    }
+
+    await this.writePageantId(targetPathId, targetDir);
+    console.error(`[Pageant] New instance: ${targetPathId} (previous ID: ${existingId})`);
+    return targetPathId;
+  }
+
   // Initialize project directory name once at startup
   async initializeProjectDirName(cwd) {
-    const currentPath = cwd;
-    const currentPathId = this.generatePathId(currentPath);
-
-    // Try to read existing ID from CLAUDE.local.md
-    const existingId = await this.extractPageantId(cwd);
-
-    if (!existingId) {
-      // No ID exists - check if a plan directory exists with case-insensitive match
-      const matchingDir = await this.findPlanDirectory(currentPathId);
-      if (matchingDir) {
-        // Found existing directory with different case - use it
-        await this.writePageantId(currentPathId, cwd);
-        this.projectDirName = matchingDir;
-        return;
-      }
-      // No existing directory - new project, use current path ID
-      await this.writePageantId(currentPathId, cwd);
-      this.projectDirName = currentPathId;
-      return;
-    }
-
-    if (existingId.toLowerCase() === currentPathId.toLowerCase()) {
-      // ID matches current path (case-insensitive) - find actual directory
-      const matchingDir = await this.findPlanDirectory(currentPathId);
-      this.projectDirName = matchingDir || currentPathId;
-      return;
-    }
-
-    // ID doesn't match current path - detect move or copy
-    // Try case-insensitive lookup for old ID
-    const oldPlanDir = await this.findPlanDirectory(existingId);
-    const oldTemplateExists = oldPlanDir ?
-      await fs.access(path.join(this.plansDir, oldPlanDir, 'template.md')).then(() => true).catch(() => false) :
-      false;
-
-    if (oldTemplateExists) {
-      // Old template exists - this is a MOVE
-      const oldPlanPath = path.join(this.plansDir, oldPlanDir);
-      const newPlanPath = path.join(this.plansDir, currentPathId);
-
-      // Check if destination already exists — if so, use it instead of renaming
-      const destExists = await fs.access(newPlanPath).then(() => true).catch(() => false);
-      if (destExists) {
-        // Destination already has a plan — just update the ID, don't clobber
-        await this.writePageantId(currentPathId, cwd);
-        console.error(`[Pageant] Destination plan already exists, using: ${currentPathId} (stale ID: ${existingId})`);
-        this.projectDirName = currentPathId;
-        return;
-      }
-
-      // Move the entire plan directory
-      await fs.rename(oldPlanPath, newPlanPath);
-
-      // Update ID in CLAUDE.local.md
-      await this.writePageantId(currentPathId, cwd);
-
-      console.error(`[Pageant] Moved plan: ${oldPlanDir} → ${currentPathId}`);
-      this.projectDirName = currentPathId;
-      return;
-    } else {
-      // Old template doesn't exist - this is a COPY or orphaned ID
-      // Check if current path already has a directory
-      const matchingDir = await this.findPlanDirectory(currentPathId);
-      if (matchingDir) {
-        await this.writePageantId(currentPathId, cwd);
-        this.projectDirName = matchingDir;
-        return;
-      }
-
-      // Create new plan directory with current path ID
-      await this.writePageantId(currentPathId, cwd);
-
-      console.error(`[Pageant] New instance: ${currentPathId} (previous ID: ${existingId})`);
-      this.projectDirName = currentPathId;
-      return;
-    }
+    this.projectDirName = await this.resolveAgentId(cwd, { allowMove: true, allowCopy: false });
   }
 
   getProjectDirName() {
@@ -396,77 +526,12 @@ export class PersonaManager extends PersonaCore {
     return this.projectDirName;
   }
 
-  // Initialize for a remote target directory (used by direct.js)
-  // Runs full copy detection logic for the target path
+  // Initialize for a remote target directory (used by direct.js and target param)
+  // Delegates to resolveAgentId with copy semantics (not move)
   async initializeForRemote(targetDir) {
-    const targetPathId = this.generatePathId(targetDir);
-    const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
-
-    // Read existing ID from target's CLAUDE.local.md
-    let existingId = null;
-    try {
-      const content = await fs.readFile(claudeLocalPath, 'utf8');
-      const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
-      existingId = match ? match[1].trim() : null;
-    } catch (error) {
-      // No CLAUDE.local.md
-    }
-
-    console.log(`🎯 Target path ID: ${targetPathId}`);
-    if (existingId) console.log(`📄 Existing ID in file: ${existingId}`);
-
-    // If no existing ID, use target path ID
-    if (!existingId) {
-      this.overrideProjectDirName = targetPathId;
-      return targetPathId;
-    }
-
-    // If ID matches target path, use it directly
-    if (existingId.toLowerCase() === targetPathId.toLowerCase()) {
-      const matchingDir = await this.findPlanDirectory(targetPathId);
-      this.overrideProjectDirName = matchingDir || targetPathId;
-      return this.overrideProjectDirName;
-    }
-
-    // ID doesn't match path - detect copy
-    const oldPlanDir = await this.findPlanDirectory(existingId);
-    const oldTemplatePath = oldPlanDir ? path.join(this.plansDir, oldPlanDir, 'template.md') : null;
-    const oldTemplateExists = oldTemplatePath ? await fs.access(oldTemplatePath).then(() => true).catch(() => false) : false;
-
-    // Check if target path already has a plan
-    const targetPlanDir = await this.findPlanDirectory(targetPathId);
-    const targetTemplatePath = targetPlanDir ? path.join(this.plansDir, targetPlanDir, 'template.md') : null;
-    const targetTemplateExists = targetTemplatePath ? await fs.access(targetTemplatePath).then(() => true).catch(() => false) : false;
-
-    if (targetTemplateExists) {
-      // Target already has a plan - use it
-      console.log(`📁 Using existing plan for target: ${targetPlanDir}`);
-      this.overrideProjectDirName = targetPlanDir;
-      // Update the PAGEANT_ID in the file
-      await this.writePageantId(targetPlanDir, targetDir);
-      return targetPlanDir;
-    }
-
-    if (oldTemplateExists) {
-      // Old plan exists but target doesn't - COPY the plan
-      const newPlanPath = path.join(this.plansDir, targetPathId);
-      const oldPlanPath = path.join(this.plansDir, oldPlanDir);
-
-      console.log(`📋 Copying plan: ${oldPlanDir} → ${targetPathId}`);
-      await fs.cp(oldPlanPath, newPlanPath, { recursive: true });
-
-      // Update the PAGEANT_ID in the target file
-      await this.writePageantId(targetPathId, targetDir);
-
-      this.overrideProjectDirName = targetPathId;
-      return targetPathId;
-    }
-
-    // No plan exists anywhere - create fresh with target ID
-    console.log(`🆕 No existing plan, using target ID: ${targetPathId}`);
-    this.overrideProjectDirName = targetPathId;
-    await this.writePageantId(targetPathId, targetDir);
-    return targetPathId;
+    const resolvedId = await this.resolveAgentId(targetDir, { allowMove: false, allowCopy: true });
+    this.overrideProjectDirName = resolvedId;
+    return resolvedId;
   }
 
   getTemplatePath() {
@@ -843,6 +908,9 @@ export class PersonaManager extends PersonaCore {
   }
 
   async compilePersona(projectPath) {
+    // Reload variables from defaults to clear stale component variables
+    await this.loadVariables();
+
     const templatePath = this.getTemplatePath();
     const personaPath = this.getPersonaPath();
     const claudeLocalPath = path.join(projectPath, 'CLAUDE.local.md');
@@ -881,8 +949,10 @@ export class PersonaManager extends PersonaCore {
       // Add PAGEANT_ID to CLAUDE.local.md (pass projectPath for remote compiles)
       await this.writePageantId(this.getProjectDirName(), projectPath);
 
-      // Add AGENT_NAME as HTML comment for proxy variable extraction
+      // Add identity HTML comments for channel and roster
       await this.writeAgentName(projectPath);
+      await this.writeAgentJob(projectPath);
+      await this.writeAgentProject(projectPath);
 
       return true;
     } catch (error) {
@@ -891,6 +961,7 @@ export class PersonaManager extends PersonaCore {
     }
   }
   async handleAdd({ section, subsection, partial, projectPath }) {
+    if (!projectPath) throw new Error('handleAdd requires projectPath');
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 
@@ -1107,6 +1178,7 @@ export class PersonaManager extends PersonaCore {
    * @returns {Object} MCP response
    */
   async handleTemporaryAdd({ section, subsection, partial, slotKey, expiresAt, projectPath }) {
+    if (!projectPath) throw new Error('handleTemporaryAdd requires projectPath');
 
     // Use handleAdd logic to resolve and find the file
     const sections = await this.multiManifest.listSections();
@@ -1261,6 +1333,7 @@ export class PersonaManager extends PersonaCore {
   }
 
   async handleRemove({ section, subsection, partial, projectPath }) {
+    if (!projectPath) throw new Error('handleRemove requires projectPath');
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 
@@ -1448,12 +1521,14 @@ export class PersonaManager extends PersonaCore {
   }
 
   async handleTalent({ talent_name, time_minutes = 5, projectPath }) {
+    if (!projectPath) throw new Error('handleTalent requires projectPath');
 
     // Add the talent from 015_talents section
     const addResult = await this.handleAdd({
       section: '015_talents',
       subsection: null,
-      partial: talent_name
+      partial: talent_name,
+      projectPath
     });
 
     // Set up timer to auto-remove
@@ -1463,7 +1538,8 @@ export class PersonaManager extends PersonaCore {
         await this.handleRemove({
           section: '015_talents',
           subsection: null,
-          partial: talent_name
+          partial: talent_name,
+          projectPath
         });
         console.log(`Auto-removed talent: ${talent_name} after ${time_minutes} minutes`);
       } catch (error) {
@@ -1483,6 +1559,7 @@ export class PersonaManager extends PersonaCore {
 
 
   async handleSetVar({ variable, value, projectPath }) {
+    if (!projectPath) throw new Error('handleSetVar requires projectPath');
     const templatePath = this.getTemplatePath();
 
     // Ensure template directory exists
@@ -1711,29 +1788,25 @@ export class PersonaManager extends PersonaCore {
       }
 
       for (const [sectionName, sectionData] of Object.entries(result.sections)) {
-        // We always process because when section is specified, result.sections
-        // only contains the matched section
-        if (true) {
-          if (section && subsection && sectionData.subsections[matchedSubsection]) {
-            // Show specific subsection - use matchedSubsection not subsection
-            for (const file of sectionData.subsections[matchedSubsection].files) {
+        if (section && subsection && sectionData.subsections[matchedSubsection]) {
+          // Show specific subsection - use matchedSubsection not subsection
+          for (const file of sectionData.subsections[matchedSubsection].files) {
+            output.push(`  - ${file.replace('.md', '')}`);
+          }
+        } else if (!subsection) {
+          // Show section with all subsections
+          output.push(`\n${sectionName}:`);
+
+          if (sectionData.files.length > 0) {
+            for (const file of sectionData.files) {
               output.push(`  - ${file.replace('.md', '')}`);
             }
-          } else if (!subsection) {
-            // Show section with all subsections
-            output.push(`\n${sectionName}:`);
+          }
 
-            if (sectionData.files.length > 0) {
-              for (const file of sectionData.files) {
-                output.push(`  - ${file.replace('.md', '')}`);
-              }
-            }
-
-            for (const [subName, subData] of Object.entries(sectionData.subsections)) {
-              output.push(`  ${subName}:`);
-              for (const file of subData.files) {
-                output.push(`    - ${file.replace('.md', '')}`);
-              }
+          for (const [subName, subData] of Object.entries(sectionData.subsections)) {
+            output.push(`  ${subName}:`);
+            for (const file of subData.files) {
+              output.push(`    - ${file.replace('.md', '')}`);
             }
           }
         }
@@ -1760,7 +1833,11 @@ export class PersonaManager extends PersonaCore {
   }
 
   async handleInspect(projectPath) {
+    if (!projectPath) {
+      throw new Error(`handleInspect requires projectPath. Got: ${projectPath}`);
+    }
     try {
+      await this.projectDirNameInitialized;
       const templatePath = this.getTemplatePath();
 
       // Trigger compilation to clean expired components before reading template
@@ -1898,6 +1975,7 @@ export class PersonaManager extends PersonaCore {
   }
 
   async handleThrift({ slot_key, virtual_path, content, expiresAt, projectPath }) {
+    if (!projectPath) throw new Error('handleThrift requires projectPath');
     const templatePath = this.getTemplatePath();
     const projectDir = path.dirname(templatePath);
 

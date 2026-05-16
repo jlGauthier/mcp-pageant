@@ -322,14 +322,6 @@ export class MultiManifest {
   }
 
   /**
-   * Check if a file exists
-   */
-  async fileExists(section, subsection = null, partial) {
-    const file = await this.findFile(section, subsection, partial);
-    return file !== null;
-  }
-
-  /**
    * Get all manifest directories
    */
   getManifestDirs() {

@@ -17,11 +17,8 @@ tasklist | findstr PID
 **Before reverting or resetting:** Check for uncommitted work across the ENTIRE repo, not just the files you touched.
 ```bash
 git status
-git stash list
 ```
-Never `git checkout .` or `git reset --hard` without confirming the blast radius.
-
-**Stash discipline:** Stashes persist but context doesn't. If you stash, pop it before session ends or document what's in there.
+`git stash`, `git checkout .`, `git clean -f`, and `git reset --hard` are all **forbidden on this machine** and blocked at the PreToolUse hook layer — the working directory is shared between agents and these commands destroy each other's work. Commit to your branch instead.
 
 ## Test Quality
 

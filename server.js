@@ -11,23 +11,22 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import fs from 'fs/promises';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, unlinkSync, openSync, writeSync, closeSync, statSync } from 'fs';
 import { join } from 'path';
+import { createHash } from 'crypto';
 import http from 'http';
 import { spawn } from 'child_process';
 import { PersonaManager } from './src/PersonaManager.js';
 import { WebEditor } from './src/WebEditor.js';
-import { AgentBuilder } from './src/AgentBuilder.js';
 
 class PersonaServer {
   constructor() {
     console.error('[DEBUG] MANIFEST_DIRS env:', process.env.MANIFEST_DIRS);
-    this.manager = new PersonaManager(__dirname);
+    this.manager = new PersonaManager(__dirname, { initialCwd: process.cwd() });
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
     this.webEditor = new WebEditor(this.manager);
-    this.agentBuilder = new AgentBuilder(__dirname);
 
     this.variableNames = [];
     this.toolHints = {};
@@ -49,7 +48,6 @@ class PersonaServer {
       {
         capabilities: {
           experimental: { 'claude/channel': {} },
-          prompts: {},
           tools: {}
         },
         instructions: this.channel.active
@@ -63,6 +61,7 @@ class PersonaServer {
 
   async initialize() {
     await this.manager.projectDirNameInitialized;
+    console.error(`[Pageant] projectDirName after init: ${this.manager.getProjectDirName()}`);
     await this.loadVariableNames();
     await this.loadToolHints();
     await this.loadManifestStructure();
@@ -71,7 +70,6 @@ class PersonaServer {
     await this.loadTalentDescriptions();
 
     this.setupToolHandlers();
-    this.setupPromptHandlers();
     this.setupResourceHandlers();
     this.setupErrorHandling();
   }
@@ -359,16 +357,16 @@ class PersonaServer {
         subsection: handler.useSubsectionParam ? args.subsection : handler.subsection,
         partial: args.partial
       };
-      return await this.manager.handleAdd(addArgs);
+      return await this.manager.handleAdd({ ...addArgs, projectPath: process.cwd() });
     } else if (handler.type === 'inspect_template') {
       // Inspect handler - shows current template composition
-      return await this.manager.handleInspect();
+      return await this.manager.handleInspect(process.cwd());
     } else if (handler.type === 'thrift') {
       // Thrift handler - inline text override
-      return await this.manager.handleThrift(args);
+      return await this.manager.handleThrift({ ...args, projectPath: process.cwd() });
     } else if (handler.type === 'talent') {
       // Talent handler - temporary component with timer
-      return await this.manager.handleTalent(args);
+      return await this.manager.handleTalent({ ...args, projectPath: process.cwd() });
     }
 
     throw new Error(`Unknown custom tool handler type: ${handler.type}`);
@@ -380,6 +378,9 @@ class PersonaServer {
 
   setupErrorHandling() {
     this.server.onerror = (error) => console.error('[MCP Error]', error);
+    process.stdout.on('error', (err) => {
+      console.error('[Pageant] stdout error (pipe broken):', err.message);
+    });
     process.on('SIGINT', async () => {
       await this.server.close();
       process.exit(0);
@@ -390,17 +391,29 @@ class PersonaServer {
 
   _parseChannelIdentity() {
     const cwd = process.cwd().replace(/\\/g, '/');
+    console.error(`[Pageant] Channel parse cwd: ${cwd}`);
     let pageantId = null;
     let agentName = null;
+    let agentJob = null;
+    let agentProject = null;
 
     try {
-      const content = readFileSync(join(process.cwd(), 'CLAUDE.local.md'), 'utf8');
+      const localPath = join(process.cwd(), 'CLAUDE.local.md');
+      console.error(`[Pageant] Reading: ${localPath}`);
+      const content = readFileSync(localPath, 'utf8');
       const idMatch = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
       const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*(.+?)\s*-->/);
+      const jobMatch = content.match(/<!--\s*AGENT_JOB:\s*(.+?)\s*-->/);
+      const projectMatch = content.match(/<!--\s*AGENT_PROJECT:\s*(.+?)\s*-->/);
       if (idMatch) pageantId = idMatch[1].trim();
       if (nameMatch) agentName = nameMatch[1].trim();
-    } catch (_) {
-      // No CLAUDE.local.md
+      if (jobMatch) agentJob = jobMatch[1].trim();
+      if (projectMatch) agentProject = projectMatch[1].trim();
+      // Debug: write identity trace
+      const debugLine = `${new Date().toISOString()} cwd=${cwd} pageantId=${pageantId} agentName=${agentName} job=${agentJob} project=${agentProject}\n`;
+      try { writeFileSync(join(process.cwd(), '.channel-debug.log'), debugLine, { flag: 'a' }); } catch(_) {}
+    } catch (e) {
+      console.error(`[Pageant] Failed reading CLAUDE.local.md: ${e.message}`);
     }
 
     if (!agentName) {
@@ -408,35 +421,35 @@ class PersonaServer {
       return { active: false };
     }
 
-    // Derive project from .pageant parent or cwd
-    let project = 'standalone';
-    let role = '';
+    // Read explicit fields first, fall back to path-derived values
+    let project = agentProject || null;
+    let job = agentJob || null;
 
-    if (pageantId) {
-      // Parse PAGEANT_ID: c--user--project--.pageant--agent_role
-      // Project = segment before .pageant, Role = after underscore in last segment
+    if ((!project || !job) && pageantId) {
       const parts = pageantId.split('--');
       const pageantIdx = parts.indexOf('.pageant');
       if (pageantIdx > 0) {
-        project = parts[pageantIdx - 1];
-        const lastPart = parts[parts.length - 1];
-        const underIdx = lastPart.indexOf('_');
-        if (underIdx > 0) {
-          role = lastPart.slice(underIdx + 1);
+        if (!project) project = parts[pageantIdx - 1];
+        if (!job) {
+          const lastPart = parts[parts.length - 1];
+          const underIdx = lastPart.indexOf('_');
+          if (underIdx > 0) job = lastPart.slice(underIdx + 1);
         }
-      } else {
-        // No .pageant in ID — use last meaningful segment, skip drive letter
+      } else if (!project) {
         project = parts.filter(p => p && p.length > 1).pop() || 'standalone';
       }
     }
 
+    project = project || 'standalone';
+    job = job || '';
+
     const name = agentName.toLowerCase();
-    const display = role ? `${name}/${role}@${project}` : `${name}@${project}`;
-    const relayId = pageantId || name; // Full ID for relay registration
+    const display = job ? `${name}/${job}@${project}` : `${name}@${project}`;
+    const relayId = pageantId || name;
 
     console.error(`[Pageant] Channel identity: ${display} (relay: ${relayId})`);
 
-    return { active: true, name, role, project, display, relayId, pageantId, agentPath: cwd };
+    return { active: true, name, job, project, display, relayId, pageantId, agentPath: cwd };
   }
 
   // --- Channel relay helpers ---
@@ -483,6 +496,10 @@ class PersonaServer {
 
   _connectSSE() {
     if (!this.channel.active) return;
+    if (stdinDead) {
+      logLifecycle('SSE connect skipped — stdin already dead');
+      return;
+    }
 
     const port = parseInt(process.env.RELAY_PORT || '7760', 10);
     const host = process.env.RELAY_HOST || 'localhost';
@@ -490,7 +507,7 @@ class PersonaServer {
     const agentPath = encodeURIComponent(this.channel.agentPath);
     const meta = encodeURIComponent(JSON.stringify({
       name: this.channel.name,
-      role: this.channel.role,
+      job: this.channel.job,
       project: this.channel.project,
       display: this.channel.display
     }));
@@ -509,20 +526,21 @@ class PersonaServer {
         return;
       }
 
-      console.error(`[Pageant] SSE subscribed as "${this.channel.display}"`);
+      logLifecycle(`SSE subscribed as "${this.channel.display}"`);
       let buffer = '';
 
       const reconnect = () => {
         if (keepaliveTimer) clearTimeout(keepaliveTimer);
         res.destroy();
-        console.error('[Pageant] SSE disconnected, reconnecting...');
+        logLifecycle('SSE disconnected, reconnecting in 3s...');
         setTimeout(() => this._connectSSE(), 3000);
       };
 
       resetKeepalive(reconnect);
 
       res.on('data', (chunk) => {
-        buffer += chunk.toString();
+        const raw = chunk.toString();
+        buffer += raw;
         const lines = buffer.split('\n');
         buffer = lines.pop();
 
@@ -533,33 +551,52 @@ class PersonaServer {
           }
           if (line.startsWith('data: ')) {
             resetKeepalive(reconnect);
+            const jsonStr = line.slice(6);
+            let event;
             try {
-              const event = JSON.parse(line.slice(6));
+              event = JSON.parse(jsonStr);
+            } catch (e) {
+              console.error(`[Pageant] SSE JSON PARSE FAILED: ${e.message} | raw: ${jsonStr.slice(0, 200)}`);
+              continue;
+            }
+            logLifecycle(`SSE EVENT from=${event.meta?.from} content=${(event.content || '').slice(0, 80)}`);
+            if (!this.server.transport) {
+              logLifecycle('Transport null — dropping channel message');
+              continue;
+            }
+            try {
               this.server.notification({
                 method: 'notifications/claude/channel',
                 params: {
                   content: event.content,
                   meta: event.meta || {}
                 }
+              }).then(() => {
+                logLifecycle('NOTIFICATION SENT ok');
               }).catch(err => {
-                console.error(`[Pageant] Channel notification error: ${err.message}`);
+                logLifecycle(`NOTIFICATION ASYNC FAIL: ${err.message}`);
               });
-            } catch (_) {
-              // Not valid JSON
+            } catch (syncErr) {
+              logLifecycle(`NOTIFICATION SYNC THROW: ${syncErr.message}\n${syncErr.stack}`);
             }
+          } else if (line.trim() && !line.startsWith(':')) {
+            console.error(`[Pageant] SSE UNEXPECTED LINE: ${line.slice(0, 200)}`);
           }
         }
       });
 
-      res.on('end', reconnect);
+      res.on('end', () => {
+        logLifecycle('SSE res.end fired');
+        reconnect();
+      });
       res.on('error', (err) => {
-        console.error(`[Pageant] SSE error: ${err.message}`);
+        logLifecycle(`SSE res.error: ${err.message}`);
         reconnect();
       });
     });
 
     req.on('error', (err) => {
-      console.error(`[Pageant] Relay connect error: ${err.message}, retrying...`);
+      logLifecycle(`Relay connect error: ${err.message}, retrying in 3s...`);
       setTimeout(() => this._connectSSE(), 3000);
     });
   }
@@ -605,6 +642,10 @@ ${this.manager.manifestDirs.map(dir => `- ${dir}`).join('\n')}`,
                   enum: ['kept', 'session', '1day', '1hour', '10min', '5min', '1min', '30sec'],
                   description: 'How long to keep this component (default: kept)',
                   default: 'kept'
+                },
+                target: {
+                  type: 'string',
+                  description: 'Absolute path to target agent directory. Omit to target self.'
                 }
               },
               required: ['slot', 'partial']
@@ -628,6 +669,10 @@ Usage notes:
                 partial: {
                   type: 'string',
                   description: 'Optional partial filename to remove specific file. Omit to remove all files in slot.'
+                },
+                target: {
+                  type: 'string',
+                  description: 'Absolute path to target agent directory. Omit to target self.'
                 }
               },
               required: ['slot']
@@ -649,6 +694,10 @@ Usage notes:
                   type: 'string',
                   enum: ['self', ...this.slotEnum, ''],
                   description: 'Optional slot to filter results. Leave empty for all. Use "self" to inspect active template.'
+                },
+                target: {
+                  type: 'string',
+                  description: 'Absolute path to target agent directory. Omit to target self. Only used with slot="self".'
                 }
               },
               required: []
@@ -673,6 +722,10 @@ Usage notes:
                 value: {
                   type: 'string',
                   description: 'New value for the variable'
+                },
+                target: {
+                  type: 'string',
+                  description: 'Absolute path to target agent directory. Omit to target self.'
                 }
               },
               required: ['variable', 'value']
@@ -719,7 +772,22 @@ Usage notes:
             type: 'object',
             properties: {
               to: { type: 'string', description: 'Target: name, name@project, or full relay ID' },
-              message: { type: 'string', description: 'Message content to send' }
+              message: { type: 'string', description: 'Message content to send' },
+              status: { type: 'string', enum: ['working', 'idle', 'blocked'], description: 'Optional: update your roster status when sending' },
+              whisper: { type: 'boolean', description: 'If true, message is excluded from channel history (default: false)' }
+            },
+            required: ['to', 'message']
+          }
+        },
+        {
+          name: 'broadcast',
+          description: 'Send a message to multiple agents at once. Pass a comma-separated list of names, or "all" to message every agent in your project (excluding yourself).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              to: { type: 'string', description: 'Comma-separated targets (e.g. "frontend,backend,qa") or "all" for entire project roster' },
+              message: { type: 'string', description: 'Message content to send' },
+              status: { type: 'string', enum: ['working', 'idle', 'blocked'], description: 'Optional: update your roster status when broadcasting' }
             },
             required: ['to', 'message']
           }
@@ -734,6 +802,17 @@ Usage notes:
             },
             required: []
           }
+        },
+        {
+          name: 'history',
+          description: 'View recent channel messages in your project. Useful after context clear to catch up on what you missed.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              last: { type: 'number', description: 'Number of recent messages to retrieve (default: 20, max: 50)' }
+            },
+            required: []
+          }
         }
       );
 
@@ -744,10 +823,24 @@ Usage notes:
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
+      // Resolve target: fresh PersonaManager for remote agents, self for local
+      const resolveForTarget = async (target) => {
+        if (!target) {
+          return { manager: this.manager, projectPath: process.cwd() };
+        }
+        const targetPath = path.resolve(target);
+        const manager = new PersonaManager(__dirname, { skipInit: true });
+        await manager.variablesLoaded;
+        await manager.initializeForRemote(targetPath);
+        await manager.loadVariables();
+        return { manager, projectPath: targetPath };
+      };
+
       try {
         switch (name) {
           case 'add': {
             const duration = args.duration || 'kept';
+            const { manager, projectPath } = await resolveForTarget(args.target);
 
             // Resolve content source: inline text, file path, or manifest component
             const isInlineContent = args.partial && (
@@ -768,7 +861,7 @@ Usage notes:
               let content, virtualPath;
 
               if (isFilePath) {
-                const resolvedPath = path.resolve(process.cwd(), args.partial);
+                const resolvedPath = path.resolve(projectPath, args.partial);
                 try {
                   content = await fs.readFile(resolvedPath, 'utf8');
                 } catch (error) {
@@ -799,14 +892,15 @@ Usage notes:
                 if (durationMs) expiresAt = Date.now() + durationMs;
               }
 
-              const result = await this.manager.handleThrift({
+              const result = await manager.handleThrift({
                 slot_key: slotKey,
                 virtual_path: virtualPath,
                 content,
-                expiresAt
+                expiresAt,
+                projectPath
               });
 
-              if (duration !== 'kept') {
+              if (duration !== 'kept' && !args.target) {
                 this.scheduleAutoRemoval(args.slot, slotKey, duration);
               }
 
@@ -827,28 +921,33 @@ Usage notes:
               const durationMs = this.getDurationMs(duration);
               const expiresAt = durationMs ? Date.now() + durationMs : null;
 
-              const result = await this.manager.handleTemporaryAdd({
+              const result = await manager.handleTemporaryAdd({
                 section,
                 subsection,
                 partial: args.partial,
                 slotKey,
-                expiresAt
+                expiresAt,
+                projectPath
               });
 
-              this.scheduleAutoRemoval(args.slot, `${slotKey}.override`, duration);
+              if (!args.target) {
+                this.scheduleAutoRemoval(args.slot, `${slotKey}.override`, duration);
+              }
               return result;
             }
 
-            return await this.manager.handleAdd({ section, subsection, partial: args.partial });
+            return await manager.handleAdd({ section, subsection, partial: args.partial, projectPath });
           }
           case 'remove': {
+            const { manager, projectPath } = await resolveForTarget(args.target);
             const { section, subsection } = this.slotToSectionSubsection(args.slot);
-            return await this.manager.handleRemove({ section, subsection, partial: args.partial });
+            return await manager.handleRemove({ section, subsection, partial: args.partial, projectPath });
           }
           case 'list': {
             // "self" triggers inspect mode - show active template components
             if (args.slot === 'self') {
-              return await this.manager.handleInspect();
+              const { manager, projectPath } = await resolveForTarget(args.target);
+              return await manager.handleInspect(projectPath);
             }
             if (args.slot && args.slot !== '') {
               const { section, subsection } = this.slotToSectionSubsection(args.slot);
@@ -856,8 +955,10 @@ Usage notes:
             }
             return await this.manager.handleList({});
           }
-          case 'set_var':
-            return await this.manager.handleSetVar(args);
+          case 'set_var': {
+            const { manager, projectPath } = await resolveForTarget(args.target);
+            return await manager.handleSetVar({ variable: args.variable, value: args.value, projectPath });
+          }
           case 'web_editor':
             const action = args.action || 'open';
             if (action === 'open') {
@@ -887,18 +988,111 @@ Usage notes:
               return { content: [{ type: 'text', text: 'Channel inactive — no AGENT_NAME in CLAUDE.local.md' }] };
             }
             try {
+              // Resolve bare names against project roster first
+              let resolvedTo = args.to;
+              const toLower = args.to.toLowerCase().trim();
+              if (!toLower.includes('@') && !toLower.includes('/') && !toLower.includes('--')) {
+                try {
+                  const roster = await this._relayGet('/agents');
+                  const match = roster.agents.find(a => a.name === toLower && a.project === this.channel.project);
+                  if (match) resolvedTo = match.id;
+                } catch (_) { /* fall through to raw target */ }
+              }
               const result = await this._relayPost('/send', {
                 from: this.channel.relayId,
                 from_display: this.channel.display,
                 from_path: this.channel.agentPath,
-                to: args.to,
-                message: args.message
+                to: resolvedTo,
+                message: args.message,
+                whisper: args.whisper || false
               });
+              if (args.status) {
+                this._relayPost('/status', { from: this.channel.relayId, status: args.status }).catch(() => {});
+              }
               if (result.sent) {
-                return { content: [{ type: 'text', text: `Sent to ${result.to_display || args.to}` }] };
+                const statusNote = args.status ? ` (status → ${args.status})` : '';
+                let crossProjectNote = '';
+                let ambiguityNote = '';
+                const display = result.to_display || '';
+                const atIdx = display.lastIndexOf('@');
+                if (atIdx > 0) {
+                  const targetProject = display.slice(atIdx + 1);
+                  const targetName = display.slice(0, atIdx).split('/')[0].toLowerCase();
+                  if (targetProject && targetProject !== this.channel.project) {
+                    crossProjectNote = ` [cross-project: ${this.channel.project} → ${targetProject}]`;
+                    try {
+                      const roster = await this._relayGet('/agents');
+                      const otherProjects = [...new Set(
+                        roster.agents
+                          .filter(a => a.name === targetName && a.project !== targetProject)
+                          .map(a => a.project)
+                      )];
+                      if (otherProjects.length > 0) {
+                        ambiguityNote = `\n⚠ Note: "${targetName}" also exists in ${otherProjects.join(', ')}. Confirm intended target.`;
+                      }
+                    } catch (_) { /* roster fetch failed; skip warning */ }
+                  }
+                }
+                return { content: [{ type: 'text', text: `Sent to ${display || args.to}${crossProjectNote}${statusNote}${ambiguityNote}` }] };
               }
               const online = (result.online || []).map(a => a.display || a.name || a).join(', ') || 'none';
               return { content: [{ type: 'text', text: `${result.error}. Online: ${online}` }] };
+            } catch (err) {
+              return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
+            }
+          }
+          case 'broadcast': {
+            if (!this.channel.active) {
+              return { content: [{ type: 'text', text: 'Channel inactive — no AGENT_NAME in CLAUDE.local.md' }] };
+            }
+            try {
+              let targets;
+              if (args.to.toLowerCase().trim() === 'all') {
+                const result = await this._relayGet('/agents');
+                targets = result.agents
+                  .filter(a => a.project === this.channel.project && a.id !== this.channel.relayId)
+                  .map(a => a.id);
+              } else {
+                // Resolve bare names against project roster to get relay IDs
+                const names = args.to.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+                const result = await this._relayGet('/agents');
+                const projectAgents = result.agents.filter(a => a.project === this.channel.project && a.id !== this.channel.relayId);
+                targets = [];
+                const notFound = [];
+                for (const name of names) {
+                  // Try bare name match within project first
+                  const match = projectAgents.find(a => a.name === name);
+                  if (match) {
+                    targets.push(match.id);
+                  } else {
+                    // Fall back to raw target (may be a full relay ID or name@project)
+                    targets.push(name);
+                  }
+                }
+              }
+              if (targets.length === 0) {
+                return { content: [{ type: 'text', text: 'No targets found' }] };
+              }
+              const results = [];
+              for (const target of targets) {
+                try {
+                  const result = await this._relayPost('/send', {
+                    from: this.channel.relayId,
+                    from_display: this.channel.display,
+                    from_path: this.channel.agentPath,
+                    to: target,
+                    message: args.message
+                  });
+                  results.push(result.sent ? `✓ ${result.to_display || target}` : `✗ ${target}: ${result.error}`);
+                } catch (err) {
+                  results.push(`✗ ${target}: ${err.message}`);
+                }
+              }
+              if (args.status) {
+                this._relayPost('/status', { from: this.channel.relayId, status: args.status }).catch(() => {});
+              }
+              const statusNote = args.status ? ` | status → ${args.status}` : '';
+              return { content: [{ type: 'text', text: `Broadcast (${results.length}):\n${results.join('\n')}${statusNote}` }] };
             } catch (err) {
               return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
             }
@@ -913,9 +1107,41 @@ Usage notes:
               if (agents.length === 0) {
                 return { content: [{ type: 'text', text: args.all ? 'No agents connected' : `No agents in project "${this.channel.project}". Use roster(all=true) to see all.` }] };
               }
-              const lines = agents.map(a => `- ${a.display || a.name} (${a.path})`);
+              const relativeTime = (ts) => {
+                if (!ts) return 'never';
+                const sec = Math.floor((Date.now() - ts) / 1000);
+                if (sec < 60) return `${sec}s ago`;
+                if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+                return `${Math.floor(sec / 3600)}h ago`;
+              };
+              const lines = agents.map(a => {
+                const jobTag = a.job ? ` [${a.job}]` : '';
+                const statusTag = a.status && a.status !== 'idle' ? ` {${a.status}}` : '';
+                const lastActive = a.lastSentAt ? ` (active ${relativeTime(a.lastSentAt)})` : ` (silent since join)`;
+                return `- ${a.display || a.name}${jobTag}${statusTag}${lastActive}`;
+              });
               const header = args.all ? 'All online agents' : `Agents in ${this.channel.project}`;
               return { content: [{ type: 'text', text: `${header}:\n${lines.join('\n')}` }] };
+            } catch (err) {
+              return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
+            }
+          }
+          case 'history': {
+            if (!this.channel.active) {
+              return { content: [{ type: 'text', text: 'Channel inactive — no AGENT_NAME in CLAUDE.local.md' }] };
+            }
+            try {
+              const last = Math.min(args.last || 20, 50);
+              const project = encodeURIComponent(this.channel.project);
+              const result = await this._relayGet(`/history/${project}?last=${last}`);
+              if (!result.messages || result.messages.length === 0) {
+                return { content: [{ type: 'text', text: 'No message history available' }] };
+              }
+              const lines = result.messages.map(m => {
+                const time = new Date(m.timestamp).toLocaleTimeString();
+                return `[${time}] ${m.from} → ${m.to}: ${m.message}`;
+              });
+              return { content: [{ type: 'text', text: `Recent messages (${result.messages.length}):\n${lines.join('\n')}` }] };
             } catch (err) {
               return { content: [{ type: 'text', text: `Cannot reach relay: ${err.message}` }] };
             }
@@ -941,114 +1167,21 @@ Usage notes:
     });
   }
 
-  setupPromptHandlers() {
-    // Handle prompt listing
-    this.server.setRequestHandler(ListPromptsRequestSchema, async () => {
-      const cwd = process.cwd();
-      const isInPageantSubdir = cwd.includes('.pageant');
-
-      return {
-        prompts: !isInPageantSubdir ? [
-          {
-            name: 'build-agent',
-            description: 'Build a new specialized agent for this project',
-            arguments: [
-              {
-                name: 'agent_name',
-                description: 'Name for the new agent (e.g., FS, QC, TW)',
-                required: true
-              },
-              {
-                name: 'role',
-                description: 'Brief description of agent role (optional)',
-                required: false
-              }
-            ]
-          }
-        ] : []
-      };
-    });
-
-    // Handle prompt execution
-    this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;
-
-      switch (name) {
-        case 'build-agent':
-          const agentName = args?.agent_name;
-          const role = args?.role || '';
-
-          // Discover tech stack first
-          const projectPath = process.cwd();
-          const techStack = await this.agentBuilder.detectTechStack(projectPath);
-          const businessDomain = await this.agentBuilder.extractBusinessDomain(projectPath);
-
-          // Build the agent
-          const buildResult = await this.agentBuilder.buildAgent(agentName, {
-            mcps: ['pageant', 'lace'],
-            role: role
-          });
-
-          let promptText = '';
-
-          if (buildResult.success) {
-            promptText = `Built agent "${agentName}" successfully! 🎯
-
-**Discovered Tech Stack:**
-${techStack.frameworks.length > 0 ? techStack.frameworks.map(f => `- ${f}`).join('\n') : '- No tech stack detected'}
-
-**Business Domain:**
-${businessDomain.description || 'No business domain found in CLAUDE.md'}
-${businessDomain.entities.length > 0 ? `\n**Key Entities:** ${businessDomain.entities.join(', ')}` : ''}
-
-**Agent Location:** ${buildResult.agentPath}
-
-**Steps Completed:**
-${buildResult.results.join('\n')}
-
-**Next Steps - Customize Your Agent:**
-1. Edit \`.pageant/${agentName}/CLAUDE.md\` to define specific role and responsibilities
-2. Update tech stack focus areas based on what the agent will work on
-3. Add collaboration notes (which other agents this one works with)
-4. Review and adjust the persona template if needed
-
-The agent has been created with real tech stack info (not generic placeholders). Make it concrete!`;
-          } else {
-            promptText = `Failed to build agent "${agentName}": ${buildResult.error}
-
-**Partial Progress:**
-${buildResult.results.join('\n')}`;
-          }
-
-          return {
-            messages: [
-              {
-                role: 'user',
-                content: {
-                  type: 'text',
-                  text: promptText
-                }
-              }
-            ]
-          };
-
-        default:
-          throw new Error(`Unknown prompt: ${name}`);
-      }
-    });
-  }
-
   async run() {
+    logLifecycle('run() starting — awaiting init...');
     await this.initPromise;
+    logLifecycle('init complete — connecting transport...');
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
-    console.error('MCP Pageant server running (enhanced version with build_agent)');
+    logLifecycle('transport connected — ensuring relay daemon...');
 
     // Start channel relay daemon if not already running
     await this.ensureRelayDaemon();
+    logLifecycle('relay daemon checked — connecting SSE...');
 
     // Connect to relay for channel messaging
     this._connectSSE();
+    logLifecycle('run() complete — server live');
   }
 
   async ensureRelayDaemon() {
@@ -1080,5 +1213,123 @@ ${buildResult.results.join('\n')}`;
   }
 }
 
+const CRASH_LOG = path.join(__dirname, 'crash.log');
+const LIFECYCLE_LOG = path.join(__dirname, 'lifecycle.log');
+
+function logCrash(label, err) {
+  const ts = new Date().toISOString();
+  const stack = err instanceof Error ? err.stack : String(err);
+  const line = `[${ts}] ${label}: ${stack}\n`;
+  console.error(`[Pageant] ${label}:`, err);
+  try { appendFileSync(CRASH_LOG, line); } catch (_) {}
+}
+
+function logLifecycle(msg) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${msg}\n`;
+  console.error(`[Pageant] ${msg}`);
+  try { appendFileSync(LIFECYCLE_LOG, line); } catch (_) {}
+}
+
+logLifecycle(`PROCESS START pid=${process.pid} cwd=${process.cwd()} argv=${process.argv.join(' ')}`);
+
+// --- Lockfile: prevent double-spawn from Claude Code ---
+// Uses O_EXCL (wx flag) for atomic create-or-fail — no race window.
+const lockDir = path.join(__dirname, '.locks');
+try { mkdirSync(lockDir, { recursive: true }); } catch(_) {}
+const lockHash = createHash('md5').update(process.cwd()).digest('hex').slice(0, 12);
+const lockFile = path.join(lockDir, `pageant-${lockHash}.lock`);
+
+function acquireLock() {
+  // Clean stale locks first (>30s old = dead process didn't clean up)
+  try {
+    const stat = statSync(lockFile);
+    const age = Date.now() - stat.mtimeMs;
+    if (age > 30000) {
+      logLifecycle(`Stale lock found (${Math.round(age/1000)}s old), removing`);
+      unlinkSync(lockFile);
+    }
+  } catch(_) {}
+
+  // Atomic create — fails if file already exists
+  try {
+    const fd = openSync(lockFile, 'wx');
+    writeSync(fd, `${process.pid}:${Date.now()}`);
+    closeSync(fd);
+    return true;
+  } catch(err) {
+    if (err.code === 'EEXIST') return false;
+    // Some other error — proceed anyway
+    return true;
+  }
+}
+
+function releaseLock() {
+  try {
+    const content = readFileSync(lockFile, 'utf8').trim();
+    if (content.startsWith(`${process.pid}:`)) {
+      unlinkSync(lockFile);
+    }
+  } catch(_) {}
+}
+
+// Touch the lock periodically so stale detection works
+let lockInterval = null;
+function startLockHeartbeat() {
+  lockInterval = setInterval(() => {
+    try { writeFileSync(lockFile, `${process.pid}:${Date.now()}`); } catch(_) {}
+  }, 10000);
+  lockInterval.unref();
+}
+
+if (!acquireLock()) {
+  logLifecycle(`DUPLICATE DETECTED — lock exists (EEXIST). Exiting immediately.`);
+  process.exit(0);
+}
+
+logLifecycle(`Lock acquired: ${lockFile}`);
+startLockHeartbeat();
+
+process.on('unhandledRejection', (reason) => {
+  logCrash('UNHANDLED REJECTION', reason);
+});
+process.on('uncaughtException', (err) => {
+  logCrash('UNCAUGHT EXCEPTION', err);
+});
+process.on('exit', (code) => {
+  releaseLock();
+  logLifecycle(`PROCESS EXIT code=${code} pid=${process.pid}`);
+});
+process.on('SIGTERM', () => {
+  logLifecycle('SIGTERM received');
+});
+process.on('SIGHUP', () => {
+  logLifecycle('SIGHUP received');
+});
+process.on('SIGINT', () => {
+  logLifecycle('SIGINT received');
+});
+let stdinDead = false;
+process.stdin.on('end', () => {
+  stdinDead = true;
+  logLifecycle('STDIN END — Claude Code closed the pipe');
+  // Give a moment for any pending writes, then exit cleanly
+  setTimeout(() => {
+    logLifecycle('Exiting after stdin end');
+    process.exit(0);
+  }, 500);
+});
+process.stdin.on('close', () => {
+  logLifecycle('STDIN CLOSE');
+});
+process.stdin.on('error', (err) => {
+  logLifecycle(`STDIN ERROR: ${err.message}`);
+});
+process.stdout.on('error', (err) => {
+  logLifecycle(`STDOUT ERROR: ${err.message}`);
+});
+
 const server = new PersonaServer();
-server.run().catch(console.error);
+server.run().catch((err) => {
+  logCrash('RUN FAILED', err);
+});

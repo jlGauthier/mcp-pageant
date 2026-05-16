@@ -10,9 +10,9 @@ Launch agent team(s) in terminal tabs.
 ### Step 1: Find the project
 Read the PLANS_DIR from the pageant `.env` file (resolve relative to the pageant root). Search that directory for subdirectories containing `.pageant--` that match the project name from `$ARGUMENTS`.
 
-The plan key format is `c--sprectums--sheepdog--.pageant--red_fs`. The part before `.pageant--` is the project path. Extract unique project paths from matching plan keys.
+The plan key format is `c--user--myproject--.pageant--scarlet`. The part before `.pageant--` is the project path. Extract unique project paths from matching plan keys.
 
-To reverse a plan key to a Windows path: split on `--`, first segment gets `:` appended (drive letter), rest are path segments joined with `\`. Example: `c--sprectums--sheepdog` → `C:\Sprectums\Sheepdog`.
+To reverse a plan key to a Windows path: split on `--`, first segment gets `:` appended (drive letter), rest are path segments joined with `\`. Example: `c--user--myproject` → `C:\User\Myproject`.
 
 ### Step 2: Resolve the .pageant directory
 The `.pageant` directory lives at `<project-path>\.pageant`.
@@ -35,4 +35,5 @@ Show which agents launched with their names and colors.
 
 ### Examples
 - `/pageant:launch myproject` → launches all agents in the matched project
-- `/pageant:launch myproject red` → launches just the "red" agent
+- `/pageant:launch myproject rose` → launches just the "rose" agent
+- `/pageant:launch myproject violet` → launches just the "violet" agent

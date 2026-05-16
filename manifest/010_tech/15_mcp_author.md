@@ -5,7 +5,6 @@
 **Project-Scoped `.mcp.json` (use this exclusively)**
 - In working directory, overrides global config
 - Portable with agent directory
-- AgentBuilder auto-generates
 
 **Global `~/.claude.json` (do not use)**
 - Indexed by working directory path

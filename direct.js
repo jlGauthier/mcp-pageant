@@ -100,7 +100,7 @@ Examples:
     const { section, subsection } = slotToSectionSubsection(args.slot);
     console.log(`\n⚙️  Adding ${args.partial} to ${args.slot}...`);
 
-    const result = await manager.handleAdd({ section, subsection, partial: args.partial });
+    const result = await manager.handleAdd({ section, subsection, partial: args.partial, projectPath: targetDir });
 
     // Recompile to target directory
     await manager.compilePersona(targetDir);
@@ -116,7 +116,7 @@ Examples:
     const { section, subsection } = slotToSectionSubsection(args.slot);
     console.log(`\n⚙️  Removing ${args.partial || 'all'} from ${args.slot}...`);
 
-    const result = await manager.handleRemove({ section, subsection, partial: args.partial });
+    const result = await manager.handleRemove({ section, subsection, partial: args.partial, projectPath: targetDir });
 
     // Recompile to target directory
     await manager.compilePersona(targetDir);
