@@ -61,13 +61,13 @@ describe('Header Formatting Bugs', () => {
     expect(formatted).not.toMatch(/# Setup.*\n\s*## Config/);
   });
 
-  it('should not output "## James" after "# User: James"', async () => {
-    // Bug: Getting "# User: James\n## James"
-    // Should be: "# User: James" (no ## James)
+  it('should not output "## User" after "# User: User"', async () => {
+    // Bug: Getting "# User: User\n## User"
+    // Should be: "# User: User" (no ## User)
 
     const fileDataList = [
-      ['080', './manifest/080_user/james.md', 'james.md',
-       '## James\n\nYour user profile.']
+      ['080', './manifest/080_user/user.md', 'user.md',
+       '## User\n\nYour user profile.']
     ];
 
     const formatted = await formatWithContext(fileDataList, multiManifest);
@@ -75,10 +75,10 @@ describe('Header Formatting Bugs', () => {
     console.log('User formatted:\n', formatted);
 
     // Should have combined header
-    expect(formatted).toContain('# User: James');
+    expect(formatted).toContain('# User: User');
 
-    // Should NOT have duplicate ## James
-    expect(formatted).not.toMatch(/# User: James\s*\n\s*## James/);
+    // Should NOT have duplicate ## User
+    expect(formatted).not.toMatch(/# User: User\s*\n\s*## User/);
   });
 
   it('should not output "## Identity Commitment" after "# End: Identity Commitment"', async () => {

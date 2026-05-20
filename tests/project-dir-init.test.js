@@ -1,8 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PersonaManager } from '../src/PersonaManager.js';
 
-const PAGEANT_DIR = 'D:/claudeTools/mcp_pageant';
-const AGENT_CWD = 'C:/James/feudle/.pageant/athena_GAME';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { mkdirSync, rmSync } from 'fs';
+import os from 'os';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PAGEANT_DIR = path.resolve(__dirname, '..');
+const AGENT_CWD = path.join(os.tmpdir(), 'pageant-test', 'myproject', '.pageant', 'agent_role');
+
+mkdirSync(AGENT_CWD, { recursive: true });
 
 describe('PersonaManager projectDirName initialization', () => {
   let originalCwd;
@@ -26,7 +34,8 @@ describe('PersonaManager projectDirName initialization', () => {
     process.chdir(AGENT_CWD);
     const pm = new PersonaManager(PAGEANT_DIR, { initialCwd: process.cwd() });
     await pm.projectDirNameInitialized;
-    expect(pm.getProjectDirName()).toBe('c--james--feudle--.pageant--athena_game');
+    const expectedId = pm.generatePathId(AGENT_CWD);
+    expect(pm.getProjectDirName()).toBe(expectedId);
   });
 });
 
