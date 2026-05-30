@@ -11,15 +11,11 @@ async function debugMerge() {
 
   console.log('Environment variables:');
   console.log('  MANIFEST_DIRS:', process.env.MANIFEST_DIRS);
-  console.log('  PLANS_DIR:', process.env.PLANS_DIR);
 
   console.log('\nResolved manifest directories:');
   manager.manifestDirs.forEach((dir, i) => {
     console.log(`  [${i}] ${dir}`);
   });
-
-  console.log('\nResolved plans directory:');
-  console.log(' ', manager.plansDir);
 
   // Check if directories exist
   const fs = await import('fs/promises');

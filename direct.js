@@ -71,22 +71,16 @@ Examples:
 
   console.log(`🎀 Target: ${targetDir}`);
 
-  // Create PersonaManager with skipInit to avoid cwd-based detection
-  const manager = new PersonaManager(__dirname, { skipInit: true });
+  const manager = new PersonaManager(__dirname);
   await manager.variablesLoaded;
 
-  // Initialize for remote target - handles copy detection
-  const resolvedId = await manager.initializeForRemote(targetDir);
-  console.log(`🔑 Resolved ID: ${resolvedId}`);
-
-  // Verify plan exists
-  const templatePath = manager.getTemplatePath();
+  const templatePath = manager.getTemplatePath(targetDir);
   const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
   try {
     await fs.access(templatePath);
   } catch {
     console.error(`❌ Template not found: ${templatePath}`);
-    console.error(`   Run from the agent directory first to create a plan, or copy an existing plan.`);
+    console.error(`   Create a pageant.template.md in the agent directory first.`);
     process.exit(1);
   }
 

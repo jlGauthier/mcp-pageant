@@ -10,7 +10,7 @@ MCP Pageant builds specialized AI agents with different expertise, personas, and
 - **Compose personas from modular components** - Mix technical knowledge, behavioral patterns, and communication styles
 - **Hot-swap on the fly** - Change agent behavior without restarting
 - **Deploy multi-agent teams** - Run 5+ specialized agents simultaneously
-- **Portable across projects** - Agents survive moves, renames, and copies
+- **Self-contained agents** - Each agent directory holds its template, compiled persona, and MCP config
 - **Zero global config pollution** - Each agent carries its own MCP configuration
 
 ## The Problem Solved
@@ -91,17 +91,20 @@ This creates:
 ```
 your-project/
 └── .pageant/
-    ├── fs/                     # Full-stack agent
-    │   ├── .mcp.json           # Agent-specific MCPs
-    │   ├── CLAUDE.local.md     # Persona (auto-generated)
+    ├── fs/                       # Full-stack agent
+    │   ├── .mcp.json             # Agent-specific MCPs
+    │   ├── pageant.template.md   # Component refs + per-project vars
+    │   ├── CLAUDE.local.md       # Compiled persona (auto-generated)
     │   └── .claude/
     │       └── settings.local.json
-    ├── qc/                     # QA agent
+    ├── qc/                       # QA agent
     │   ├── .mcp.json
+    │   ├── pageant.template.md
     │   ├── CLAUDE.local.md
     │   └── .claude/
-    └── ux/                     # UX agent
+    └── ux/                       # UX agent
         ├── .mcp.json
+        ├── pageant.template.md
         ├── CLAUDE.local.md
         └── .claude/
 ```
@@ -138,7 +141,8 @@ cp -r ~/previous-project/.pageant ./
 
 # Each agent already has:
 # - .mcp.json (agent-specific MCPs)
-# - CLAUDE.local.md (persona with stable ID)
+# - pageant.template.md (component composition)
+# - CLAUDE.local.md (compiled persona)
 # - .claude/settings.local.json (permissions)
 ```
 
@@ -148,7 +152,7 @@ cd .pageant/fs && claude
 cd .pageant/qc && claude
 ```
 
-Agents automatically detect they've been moved (via stable IDs) and maintain their configurations.
+The template lives next to the persona, so moving or copying the directory carries everything.
 
 **When to use:** Deploying proven team structures, standardizing across projects, rapid setup.
 
@@ -185,19 +189,24 @@ This lets you:
 - **Accumulate technical knowledge** (slot 010.X): nodejs + postgresql + docker + react
 - **Switch communication style** (slot 040.01): technical → casual → formal
 
-### Portable Agents
+### Self-Contained Agents
 
-Agents use **stable IDs** instead of file paths. Move or rename directories without breaking anything:
+Each agent owns its template. The compiled persona, the source template, and
+the MCP config all live in the agent directory:
 
-```markdown
-<!-- PAGEANT_ID: c--user--myproject--.pageant--agent_fs -->
+```
+.pageant/fs/
+├── pageant.template.md     # source of truth (edit this)
+├── CLAUDE.local.md         # compiled persona (regenerated on every add/remove)
+├── .mcp.json
+├── CLAUDE.md
+└── .claude/settings.local.json
 ```
 
 **What this enables:**
-- Move `C:\project1\` → `D:\project2\` - agent still works
-- Rename `.pageant\FS\` → `.pageant\fs\` - no case sensitivity issues
-- Copy agent to new project - gets new ID, independent configuration
-- Template storage decoupled from filesystem locations
+- Copy `cp -r .pageant/fs .pageant/fs2` and you have a new independent agent
+- Move the whole `.pageant/` to another project, nothing to reconfigure
+- The template is plain markdown, version-controllable, diff-friendly
 
 ### Project-Scoped MCPs
 
@@ -241,8 +250,6 @@ Works with:
 - **`list`** - Browse available components
 - **`inspect`** - Show current template composition with slot keys
 - **`set_var`** - Configure dynamic variables
-- **`build_agent`** - Create new agent with own config
-- **`web_editor`** - Launch visual persona editor (http://localhost:52100)
 
 ## Multi-Agent Workflows
 
@@ -283,23 +290,6 @@ Works with:
 5. Tools agent automates deployment
 
 Each agent focuses on their domain without conflicting knowledge.
-
-## Web Editor
-
-Launch visual interface for persona management:
-
-```bash
-bun launch-editor.js
-# Opens http://localhost:52100
-```
-
-**Features:**
-- Tree view of all manifest components
-- Real-time persona preview
-- Project switching
-- Add/remove components visually
-- Variable configuration
-- Search across all components
 
 ## Advanced Features
 

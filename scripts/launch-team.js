@@ -26,10 +26,10 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
 dotenv.config({ path: path.join(PACKAGE_ROOT, '.env') });
 
-const PLANS_DIR = path.resolve(PACKAGE_ROOT, process.env.PLANS_DIR || './plans');
 const COMPILE_SCRIPT = path.join(PACKAGE_ROOT, 'scripts', 'compile-remote.js');
 const LAUNCH_CMD = process.env.LAUNCH_CMD || 'claude';
 const DEFAULT_COLOR = '#888888';
+const TEMPLATE_FILENAME = 'pageant.template.md';
 
 function readVarsFromFile(filePath) {
   const vars = {};
@@ -37,22 +37,16 @@ function readVarsFromFile(filePath) {
 
   const content = fs.readFileSync(filePath, 'utf8');
 
-  // Check HTML comments first (compiled output format)
-  const idMatch = content.match(/<!-- PAGEANT_ID: (.+?) -->/);
-  if (idMatch) vars.PAGEANT_ID = idMatch[1];
   const nameMatch = content.match(/<!-- AGENT_NAME: (.+?) -->/);
   if (nameMatch) vars.AGENT_NAME = nameMatch[1];
   const colorMatch = content.match(/<!-- AGENT_COLOR: (.+?) -->/);
   if (colorMatch) vars.AGENT_COLOR = colorMatch[1];
 
-  // Check var lines (template format: KEY=value before first @ or #)
+  // Template format: KEY=value lines before first @ or #
   for (const line of content.split('\n')) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('@') || trimmed.startsWith('#') || trimmed.startsWith('<!--')) {
-      if (!trimmed.startsWith('<!--')) break;
-      continue;
-    }
-    if (!trimmed) continue;
+    if (trimmed.startsWith('@') || trimmed.startsWith('#')) break;
+    if (trimmed.startsWith('<!--') || !trimmed) continue;
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx > 0) {
       const key = trimmed.substring(0, eqIdx).trim();
@@ -63,27 +57,14 @@ function readVarsFromFile(filePath) {
   return vars;
 }
 
-function planKeyFromPath(agentPath) {
-  let normalized = agentPath.toLowerCase();
-  normalized = normalized.replace(/^([a-z]):/, '$1').replace(/\\/g, '/');
-  if (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
-  return normalized.split('/').filter(Boolean).join('--');
-}
-
 function getAgentVars(agentPath) {
-  // Try compiled output first
   const vars = readVarsFromFile(path.join(agentPath, 'CLAUDE.local.md'));
 
-  // Fall back to plan template if missing name/color
+  // Fall back to template (same directory now) for missing name/color
   if (!vars.AGENT_NAME || !vars.AGENT_COLOR) {
-    const pageantId = vars.PAGEANT_ID || planKeyFromPath(agentPath);
-    const planDirs = fs.existsSync(PLANS_DIR) ? fs.readdirSync(PLANS_DIR) : [];
-    const match = planDirs.find(d => d.toLowerCase() === pageantId.toLowerCase());
-    if (match) {
-      const templateVars = readVarsFromFile(path.join(PLANS_DIR, match, 'template.md'));
-      if (!vars.AGENT_NAME) vars.AGENT_NAME = templateVars.AGENT_NAME;
-      if (!vars.AGENT_COLOR) vars.AGENT_COLOR = templateVars.AGENT_COLOR;
-    }
+    const templateVars = readVarsFromFile(path.join(agentPath, TEMPLATE_FILENAME));
+    if (!vars.AGENT_NAME) vars.AGENT_NAME = templateVars.AGENT_NAME;
+    if (!vars.AGENT_COLOR) vars.AGENT_COLOR = templateVars.AGENT_COLOR;
   }
 
   return vars;

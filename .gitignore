@@ -6,13 +6,14 @@ node_modules/
 # Local configuration
 CLAUDE.md
 CLAUDE.local.md
+pageant.template.md
 .env
 .env.local
 *.local
 .mcp.json
 .claude/
 
-# Plans and compiled personas
+# Legacy plans directory (removed; kept in ignore for transition)
 plans/
 
 # Logs

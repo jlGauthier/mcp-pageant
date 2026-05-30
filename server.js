@@ -19,14 +19,12 @@ import { createHash } from 'crypto';
 import http from 'http';
 import { spawn } from 'child_process';
 import { PersonaManager } from './src/PersonaManager.js';
-import { WebEditor } from './src/WebEditor.js';
 
 class PersonaServer {
   constructor() {
     console.error('[DEBUG] MANIFEST_DIRS env:', process.env.MANIFEST_DIRS);
-    this.manager = new PersonaManager(__dirname, { initialCwd: process.cwd() });
+    this.manager = new PersonaManager(__dirname);
     console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
-    this.webEditor = new WebEditor(this.manager);
 
     this.variableNames = [];
     this.toolHints = {};
@@ -60,8 +58,7 @@ class PersonaServer {
   }
 
   async initialize() {
-    await this.manager.projectDirNameInitialized;
-    console.error(`[Pageant] projectDirName after init: ${this.manager.getProjectDirName()}`);
+    await this.manager.variablesLoaded;
     await this.loadVariableNames();
     await this.loadToolHints();
     await this.loadManifestStructure();
@@ -217,25 +214,6 @@ class PersonaServer {
       }
     }
 
-    // Then load from plans directory
-    try {
-      const defaultVarsPath = path.join(__dirname, 'plans', 'default_vars.txt');
-      const content = await fs.readFile(defaultVarsPath, 'utf8');
-      const lines = content.split('\n');
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#')) {
-          const [key] = trimmed.split('=');
-          if (key) {
-            varSet.add(key.trim());
-          }
-        }
-      }
-    } catch (error) {
-      // Plans default_vars.txt is optional
-    }
-
     this.variableNames = Array.from(varSet);
 
     if (this.variableNames.length === 0) {
@@ -328,7 +306,7 @@ class PersonaServer {
           // Clean up timer reference
           this.activeTimers.delete(slotKey);
 
-          const templatePath = this.manager.getTemplatePath();
+          const templatePath = this.manager.getTemplatePath(process.cwd());
           await this.manager.removeSlotByKey(templatePath, slotKey);
 
           // Recompile after removal so the base file shows through
@@ -392,26 +370,19 @@ class PersonaServer {
   _parseChannelIdentity() {
     const cwd = process.cwd().replace(/\\/g, '/');
     console.error(`[Pageant] Channel parse cwd: ${cwd}`);
-    let pageantId = null;
     let agentName = null;
     let agentJob = null;
     let agentProject = null;
 
     try {
       const localPath = join(process.cwd(), 'CLAUDE.local.md');
-      console.error(`[Pageant] Reading: ${localPath}`);
       const content = readFileSync(localPath, 'utf8');
-      const idMatch = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
       const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*(.+?)\s*-->/);
       const jobMatch = content.match(/<!--\s*AGENT_JOB:\s*(.+?)\s*-->/);
       const projectMatch = content.match(/<!--\s*AGENT_PROJECT:\s*(.+?)\s*-->/);
-      if (idMatch) pageantId = idMatch[1].trim();
       if (nameMatch) agentName = nameMatch[1].trim();
       if (jobMatch) agentJob = jobMatch[1].trim();
       if (projectMatch) agentProject = projectMatch[1].trim();
-      // Debug: write identity trace
-      const debugLine = `${new Date().toISOString()} cwd=${cwd} pageantId=${pageantId} agentName=${agentName} job=${agentJob} project=${agentProject}\n`;
-      try { writeFileSync(join(process.cwd(), '.channel-debug.log'), debugLine, { flag: 'a' }); } catch(_) {}
     } catch (e) {
       console.error(`[Pageant] Failed reading CLAUDE.local.md: ${e.message}`);
     }
@@ -421,35 +392,29 @@ class PersonaServer {
       return { active: false };
     }
 
-    // Read explicit fields first, fall back to path-derived values
-    let project = agentProject || null;
-    let job = agentJob || null;
-
-    if ((!project || !job) && pageantId) {
-      const parts = pageantId.split('--');
-      const pageantIdx = parts.indexOf('.pageant');
-      if (pageantIdx > 0) {
-        if (!project) project = parts[pageantIdx - 1];
-        if (!job) {
-          const lastPart = parts[parts.length - 1];
-          const underIdx = lastPart.indexOf('_');
-          if (underIdx > 0) job = lastPart.slice(underIdx + 1);
-        }
-      } else if (!project) {
-        project = parts.filter(p => p && p.length > 1).pop() || 'standalone';
-      }
+    // Derive missing fields from path: <project>/.pageant/<agent_role>
+    const segments = cwd.split('/').filter(Boolean);
+    const pageantIdx = segments.lastIndexOf('.pageant');
+    if (!agentProject) {
+      if (pageantIdx > 0) agentProject = segments[pageantIdx - 1];
+      else agentProject = segments[segments.length - 1] || 'standalone';
+    }
+    if (!agentJob) {
+      const dirName = segments[segments.length - 1] || '';
+      const underIdx = dirName.indexOf('_');
+      if (underIdx > 0) agentJob = dirName.slice(underIdx + 1);
     }
 
-    project = project || 'standalone';
-    job = job || '';
-
+    const project = (agentProject || 'standalone').toLowerCase();
+    const job = agentJob || '';
     const name = agentName.toLowerCase();
     const display = job ? `${name}/${job}@${project}` : `${name}@${project}`;
-    const relayId = pageantId || name;
+    // Relay identity is the canonical agent path: stable across renames of variables but moves with the directory.
+    const relayId = cwd;
 
     console.error(`[Pageant] Channel identity: ${display} (relay: ${relayId})`);
 
-    return { active: true, name, job, project, display, relayId, pageantId, agentPath: cwd };
+    return { active: true, name, job, project, display, relayId, agentPath: cwd };
   }
 
   // --- Channel relay helpers ---
@@ -618,7 +583,7 @@ Usage notes:
 - Specify \`partial\` to match a component filename (e.g., "athletic" matches "athletic_fit")
 - Use \`partial=random\` to add a random component from the specified slot
 - Inline content is auto-detected when partial contains spaces (e.g., "custom configuration text")
-- File path: pass a relative or absolute path (e.g., "./plans/QA/05-onboarding.md") to inject any file as a component
+- File path: pass a relative or absolute path (e.g., "./docs/QA/05-onboarding.md") to inject any file as a component
 - Use \`duration\` to auto-remove after specified time (default: kept permanently)
 - Temporary components auto-restore the previous content when they expire
 - The tool compiles your persona automatically after adding the component
@@ -731,21 +696,6 @@ Usage notes:
               required: ['variable', 'value']
             }
           },
-          {
-            name: 'web_editor',
-            description: 'Open web-based persona editor in browser',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                action: {
-                  type: 'string',
-                  enum: ['open', 'close'],
-                  description: 'Open or close the web editor'
-                }
-              },
-              required: []
-            }
-          },
           ...this.customTools.map(tool => {
             let description = tool.description;
 
@@ -823,16 +773,15 @@ Usage notes:
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
-      // Resolve target: fresh PersonaManager for remote agents, self for local
+      // Resolve target: fresh PersonaManager for remote agents, self for local.
+      // No ID resolution needed — the project path IS the identity.
       const resolveForTarget = async (target) => {
         if (!target) {
           return { manager: this.manager, projectPath: process.cwd() };
         }
         const targetPath = path.resolve(target);
-        const manager = new PersonaManager(__dirname, { skipInit: true });
+        const manager = new PersonaManager(__dirname);
         await manager.variablesLoaded;
-        await manager.initializeForRemote(targetPath);
-        await manager.loadVariables();
         return { manager, projectPath: targetPath };
       };
 
@@ -959,30 +908,6 @@ Usage notes:
             const { manager, projectPath } = await resolveForTarget(args.target);
             return await manager.handleSetVar({ variable: args.variable, value: args.value, projectPath });
           }
-          case 'web_editor':
-            const action = args.action || 'open';
-            if (action === 'open') {
-              const result = await this.webEditor.start();
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: result.message,
-                  },
-                ],
-              };
-            } else if (action === 'close') {
-              const result = await this.webEditor.stop();
-              return {
-                content: [
-                  {
-                    type: 'text',
-                    text: result.message,
-                  },
-                ],
-              };
-            }
-            break;
           case 'send': {
             if (!this.channel.active) {
               return { content: [{ type: 'text', text: 'Channel inactive — no AGENT_NAME in CLAUDE.local.md' }] };

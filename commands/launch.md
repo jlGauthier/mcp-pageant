@@ -8,11 +8,11 @@ Launch agent team(s) in terminal tabs.
 ## Behavior
 
 ### Step 1: Find the project
-Read the PLANS_DIR from the pageant `.env` file (resolve relative to the pageant root). Search that directory for subdirectories containing `.pageant--` that match the project name from `$ARGUMENTS`.
-
-The plan key format is `c--user--myproject--.pageant--scarlet`. The part before `.pageant--` is the project path. Extract unique project paths from matching plan keys.
-
-To reverse a plan key to a Windows path: split on `--`, first segment gets `:` appended (drive letter), rest are path segments joined with `\`. Example: `c--user--myproject` → `C:\User\Myproject`.
+Use `Glob` for `**/.pageant/*/pageant.template.md` under the typical project roots
+(e.g. `C:\James`, `C:\Sprectums`, or paths the user has mentioned) and pick the
+unique project directory whose name fuzzy-matches the project name from
+`$ARGUMENTS`. The project directory is the one that contains the `.pageant`
+folder.
 
 ### Step 2: Resolve the .pageant directory
 The `.pageant` directory lives at `<project-path>\.pageant`.

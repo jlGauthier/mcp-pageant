@@ -16,7 +16,7 @@
  *   node deploy-team.js "C:/project-a/.pageant" "C:/project-b/.pageant" --only="agent1_FS,agent2_QA"
  *
  * What it does for each agent:
- *   1. Copies plan dir (template.md) from source PAGEANT_ID to new target ID
+ *   1. Copies pageant.template.md from source agent dir to target agent dir
  *   2. Creates .mcp.json with the correct MCPs
  *   3. Creates .claude/settings.local.json
  *   4. Compiles persona → CLAUDE.local.md
@@ -41,8 +41,8 @@ const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
 dotenv.config({ path: path.join(PACKAGE_ROOT, '.env') });
 
-const PLANS_DIR = path.resolve(PACKAGE_ROOT, process.env.PLANS_DIR || './plans');
 const COMPILE_SCRIPT = path.join(PACKAGE_ROOT, 'scripts', 'compile-remote.js');
+const TEMPLATE_FILENAME = 'pageant.template.md';
 
 // All known MCP definitions — add new ones here
 const MCP_DEFINITIONS = {
@@ -119,23 +119,6 @@ function parseAgentMcps(mcpString) {
   return map;
 }
 
-// --- ID Generation (matches PersonaManager.generatePathId) ---
-
-function generatePathId(absolutePath) {
-  let normalized = absolutePath.toLowerCase();
-  // Windows: remove colon from drive letter
-  normalized = normalized.replace(/^([a-z]):/, '$1');
-  // Normalize separators
-  normalized = normalized.replace(/\\/g, '/');
-  if (normalized.endsWith('/')) normalized = normalized.slice(0, -1);
-  return normalized.split('/').filter(Boolean).join('--');
-}
-
-function extractPageantId(content) {
-  const match = content.match(/<!--\s*PAGEANT_ID:\s*(.+?)\s*-->/);
-  return match ? match[1].trim() : null;
-}
-
 // --- Discovery ---
 
 async function discoverSourceAgents(sourceDir) {
@@ -147,20 +130,8 @@ async function discoverSourceAgents(sourceDir) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
 
     const agentPath = path.join(sourceDir, entry.name);
-    const claudeLocalPath = path.join(agentPath, 'CLAUDE.local.md');
 
-    // Must have a compiled persona to clone from
-    let pageantId = null;
     let mcpServers = [];
-    try {
-      const content = await fs.readFile(claudeLocalPath, 'utf8');
-      pageantId = extractPageantId(content);
-    } catch {
-      // No CLAUDE.local.md — try to find plan from path-based ID
-      pageantId = null;
-    }
-
-    // Read source MCPs
     try {
       const mcpJson = JSON.parse(await fs.readFile(path.join(agentPath, '.mcp.json'), 'utf8'));
       mcpServers = Object.keys(mcpJson.mcpServers || {});
@@ -168,29 +139,13 @@ async function discoverSourceAgents(sourceDir) {
       mcpServers = [...BASE_MCPS];
     }
 
-    // Determine plan directory
-    const pathBasedId = generatePathId(agentPath);
-    const useId = pageantId || pathBasedId;
-
-    // Verify plan exists
-    let planDir = null;
-    const candidateIds = [useId, pathBasedId];
-    if (pageantId && pageantId !== pathBasedId) candidateIds.push(pageantId);
-
-    for (const id of candidateIds) {
-      const candidate = path.join(PLANS_DIR, id);
-      try {
-        await fs.access(path.join(candidate, 'template.md'));
-        planDir = candidate;
-        break;
-      } catch { /* continue */ }
-    }
+    const templatePath = path.join(agentPath, TEMPLATE_FILENAME);
+    const hasTemplate = await fs.access(templatePath).then(() => true).catch(() => false);
 
     agents.push({
       dirName: entry.name,
       sourcePath: agentPath,
-      pageantId: useId,
-      planDir,
+      templatePath: hasTemplate ? templatePath : null,
       mcpServers
     });
   }
@@ -200,30 +155,17 @@ async function discoverSourceAgents(sourceDir) {
 
 // --- Build Operations ---
 
-async function copyPlanDir(sourcePlanDir, targetId) {
-  const targetPlanDir = path.join(PLANS_DIR, targetId);
-
+async function copyTemplate(sourceTemplate, targetAgentPath) {
+  const targetTemplate = path.join(targetAgentPath, TEMPLATE_FILENAME);
   try {
-    await fs.access(path.join(targetPlanDir, 'template.md'));
-    console.log(`    Plan already exists at ${targetId}, skipping copy`);
-    return targetPlanDir;
+    await fs.access(targetTemplate);
+    console.log(`    Template already exists at target, skipping copy`);
+    return;
   } catch { /* needs copy */ }
 
-  await fs.mkdir(targetPlanDir, { recursive: true });
-
-  // Copy all files from source plan
-  const files = await fs.readdir(sourcePlanDir);
-  for (const file of files) {
-    const src = path.join(sourcePlanDir, file);
-    const dest = path.join(targetPlanDir, file);
-    const stat = await fs.stat(src);
-    if (stat.isFile()) {
-      await fs.copyFile(src, dest);
-    }
-  }
-
-  console.log(`    Copied plan: ${path.basename(sourcePlanDir)} → ${targetId}`);
-  return targetPlanDir;
+  await fs.mkdir(targetAgentPath, { recursive: true });
+  await fs.copyFile(sourceTemplate, targetTemplate);
+  console.log(`    Copied template: ${path.basename(path.dirname(sourceTemplate))} → ${path.basename(targetAgentPath)}`);
 }
 
 function buildMcpJson(mcpNames) {
@@ -350,42 +292,36 @@ Examples:
 
   for (const agent of agents) {
     const targetAgentPath = path.join(targetDir, agent.dirName);
-    const targetId = generatePathId(targetAgentPath);
 
-    // Determine MCPs: source MCPs + any extras from --mcps flag
-    // Filter out project-specific MCPs that won't exist in target (like render)
     const portableMcps = agent.mcpServers.filter(m => MCP_DEFINITIONS[m]);
     const agentExtras = extraMcps[agent.dirName.toLowerCase()] || [];
     const allMcps = [...new Set([...portableMcps, ...agentExtras])];
-    // Ensure base MCPs are always present
     for (const base of baseMcps) {
       if (!allMcps.includes(base)) allMcps.unshift(base);
     }
 
     console.log(`📦 ${agent.dirName}`);
-    console.log(`    Source ID: ${agent.pageantId}`);
-    console.log(`    Target ID: ${targetId}`);
     console.log(`    MCPs: ${allMcps.join(', ')}`);
-    console.log(`    Plan: ${agent.planDir ? '✅' : '❌ MISSING'}`);
+    console.log(`    Template: ${agent.templatePath ? '✅' : '❌ MISSING'}`);
 
     if (dryRun) {
       console.log(`    [DRY RUN — skipping]\n`);
       continue;
     }
 
-    if (!agent.planDir) {
-      console.log(`    ⚠️  No source plan dir found — skipping (create template manually)`);
+    if (!agent.templatePath) {
+      console.log(`    ⚠️  No source pageant.template.md — skipping (create one manually)`);
       failed++;
       console.log();
       continue;
     }
 
     try {
-      // 1. Copy plan dir
-      await copyPlanDir(agent.planDir, targetId);
-
-      // 2. Ensure agent directory structure
+      // 1. Ensure agent directory structure
       await ensureAgentDir(targetDir, agent.dirName);
+
+      // 2. Copy template into target agent directory
+      await copyTemplate(agent.templatePath, targetAgentPath);
 
       // 3. Write .mcp.json
       const mcpPath = path.join(targetAgentPath, '.mcp.json');
@@ -406,7 +342,7 @@ Examples:
         if (claudeCreated) console.log(`    CLAUDE.md: copied from source`);
       } catch { /* no source CLAUDE.md */ }
 
-      // 6. Compile
+      // 6. Compile persona
       if (!skipCompile) {
         console.log(`    Compiling...`);
         const compiled = await compileAgent(targetAgentPath);
