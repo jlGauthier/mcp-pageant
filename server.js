@@ -22,9 +22,8 @@ import { PersonaManager } from './src/PersonaManager.js';
 
 class PersonaServer {
   constructor() {
-    console.error('[DEBUG] MANIFEST_DIRS env:', process.env.MANIFEST_DIRS);
     this.manager = new PersonaManager(__dirname);
-    console.error('[DEBUG] PersonaManager manifest dirs:', this.manager.multiManifest.getManifestDirs());
+    console.error('[Pageant] manifest dirs:', this.manager.multiManifest.getManifestDirs());
 
     this.variableNames = [];
     this.toolHints = {};
@@ -372,17 +371,16 @@ class PersonaServer {
     console.error(`[Pageant] Channel parse cwd: ${cwd}`);
     let agentName = null;
     let agentJob = null;
-    let agentProject = null;
 
+    // AGENT_NAME and AGENT_JOB are still written into CLAUDE.local.md.
+    // AGENT_PROJECT is always derived from the path — never read from the file.
     try {
       const localPath = join(process.cwd(), 'CLAUDE.local.md');
       const content = readFileSync(localPath, 'utf8');
       const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*(.+?)\s*-->/);
       const jobMatch = content.match(/<!--\s*AGENT_JOB:\s*(.+?)\s*-->/);
-      const projectMatch = content.match(/<!--\s*AGENT_PROJECT:\s*(.+?)\s*-->/);
       if (nameMatch) agentName = nameMatch[1].trim();
       if (jobMatch) agentJob = jobMatch[1].trim();
-      if (projectMatch) agentProject = projectMatch[1].trim();
     } catch (e) {
       console.error(`[Pageant] Failed reading CLAUDE.local.md: ${e.message}`);
     }
@@ -392,24 +390,17 @@ class PersonaServer {
       return { active: false };
     }
 
-    // Derive missing fields from path: <project>/.pageant/<agent_role>
-    const segments = cwd.split('/').filter(Boolean);
-    const pageantIdx = segments.lastIndexOf('.pageant');
-    if (!agentProject) {
-      if (pageantIdx > 0) agentProject = segments[pageantIdx - 1];
-      else agentProject = segments[segments.length - 1] || 'standalone';
-    }
+    const project = PersonaManager.deriveProjectFromPath(cwd);
+
     if (!agentJob) {
+      const segments = cwd.split('/').filter(Boolean);
       const dirName = segments[segments.length - 1] || '';
       const underIdx = dirName.indexOf('_');
       if (underIdx > 0) agentJob = dirName.slice(underIdx + 1);
     }
-
-    const project = (agentProject || 'standalone').toLowerCase();
     const job = agentJob || '';
     const name = agentName.toLowerCase();
     const display = job ? `${name}/${job}@${project}` : `${name}@${project}`;
-    // Relay identity is the canonical agent path: stable across renames of variables but moves with the directory.
     const relayId = cwd;
 
     console.error(`[Pageant] Channel identity: ${display} (relay: ${relayId})`);

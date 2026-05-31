@@ -3,17 +3,28 @@ import path from 'path';
 import { FuzzyMatch } from './FuzzyMatch.js';
 
 /**
- * MultiManifest - Handles file operations across main manifest and N extension directories
+ * MultiManifest - Resolves manifest components across the public manifest
+ * and an optional gitignored manifest.local overlay.
  *
- * Terminology:
- * - Main manifest: The primary manifest directory (first in array)
- * - Extensions: Additional manifest directories that extend/override main
- * - Later directories have PRIORITY over earlier ones
+ * Layout:
+ *   <pageant>/manifest/         public, committed
+ *   <pageant>/manifest.local/   private, gitignored, wins on collision
  */
 export class MultiManifest {
-  constructor(manifestDirs = []) {
-    // Store absolute paths - first is main, rest are extensions
-    this.manifestDirs = manifestDirs.map(dir => path.resolve(dir));
+  constructor(mainDir, localDir = null) {
+    // Forgiving signature for tests and legacy callers:
+    //   new MultiManifest('/a')                 → main only
+    //   new MultiManifest('/a', '/b')           → main + local overlay
+    //   new MultiManifest(['/a'])               → main only
+    //   new MultiManifest(['/a', '/b', '/c'])   → ordered: index 0 lowest priority, last wins
+    let dirs;
+    if (Array.isArray(mainDir)) {
+      dirs = mainDir.map(d => path.resolve(d));
+    } else {
+      dirs = [path.resolve(mainDir)];
+      if (localDir) dirs.push(path.resolve(localDir));
+    }
+    this.manifestDirs = dirs;
   }
 
   /**
@@ -329,56 +340,30 @@ export class MultiManifest {
   }
 
   /**
-   * Add an extension manifest directory
-   */
-  addManifestDir(dir) {
-    const absPath = path.resolve(dir);
-    if (!this.manifestDirs.includes(absPath)) {
-      this.manifestDirs.push(absPath);
-    }
-  }
-
-  /**
-   * Remove a manifest directory
-   */
-  removeManifestDir(dir) {
-    const absPath = path.resolve(dir);
-    const index = this.manifestDirs.indexOf(absPath);
-    if (index > -1) {
-      this.manifestDirs.splice(index, 1);
-    }
-  }
-
-  /**
-   * Resolve a manifest-relative path to an absolute path
-   * Handles various path formats:
-   * - ./manifest/001_main/muse.md
-   * - ./../other_manifest/manifest/001_main/muse.md
-   * - 001_main/muse.md (manifest-relative)
-   * Returns null if file not found in any manifest
+   * Resolve a manifest-relative path to an absolute path.
+   * Accepts paths containing /manifest/ or /manifest.local/ (or legacy
+   * external manifests under any name ending in /manifest/), plus
+   * manifest-relative paths like "001_main/engineer.md".
    */
   async resolveManifestPath(refPath) {
-    // Extract manifest-relative part from various formats
     let manifestRelativePath = null;
 
-    // Check for paths containing /manifest/
-    const manifestMatch = refPath.match(/\/manifest\/(.+)$/);
+    const manifestMatch = refPath.match(/\/manifest(?:\.local)?\/(.+)$/);
     if (manifestMatch) {
       manifestRelativePath = manifestMatch[1];
     } else if (!refPath.startsWith('./') && !refPath.startsWith('../')) {
-      // Already manifest-relative
       manifestRelativePath = refPath;
     }
 
     if (manifestRelativePath) {
-      // Try to find this file in any configured manifest directory
-      for (const manifestDir of this.manifestDirs) {
-        const candidatePath = path.join(manifestDir, manifestRelativePath);
+      // Local overlay wins: try local first, then public
+      for (let i = this.manifestDirs.length - 1; i >= 0; i--) {
+        const candidatePath = path.join(this.manifestDirs[i], manifestRelativePath);
         try {
           await fs.stat(candidatePath);
           return candidatePath;
         } catch {
-          // File doesn't exist in this manifest, try next
+          // try next
         }
       }
     }
@@ -399,18 +384,13 @@ export class MultiManifest {
   }
 
   /**
-   * Parse a reference path to extract components
-   * Handles formats like:
-   * - @./manifest/001_main/file.md
-   * - @./../other_manifest/manifest/050_story/file.md
-   * Returns: { section, subsection, filename, manifestRelative }
+   * Parse a reference path to extract components.
+   * Accepts /manifest/ and /manifest.local/ segments.
    */
   parsePath(refPath) {
-    // Remove @ prefix if present
     const cleanPath = refPath.startsWith('@') ? refPath.substring(1) : refPath;
 
-    // Extract the manifest-relative part (everything after /manifest/)
-    const manifestMatch = cleanPath.match(/\/manifest\/(.+)$/);
+    const manifestMatch = cleanPath.match(/\/manifest(?:\.local)?\/(.+)$/);
     if (!manifestMatch) {
       return null;
     }
@@ -455,25 +435,18 @@ export class MultiManifest {
     const warnings = [];
     let cleanedPath = refPath;
 
-    // Check for duplicate /manifest/ occurrences
-    const manifestCount = (refPath.match(/\/manifest\//g) || []).length;
-    if (manifestCount > 1) {
-      // Fix: Keep only first occurrence and last part
-      const parts = refPath.split('/manifest/');
+    // Collapse duplicate /manifest/ or /manifest.local/ segments
+    const segCount = (refPath.match(/\/manifest(?:\.local)?\//g) || []).length;
+    if (segCount > 1) {
+      const parts = refPath.split(/\/manifest(?:\.local)?\//);
       cleanedPath = parts[0] + '/manifest/' + parts[parts.length - 1];
-      warnings.push(`Fixed duplicate /manifest/ pattern: ${refPath} -> ${cleanedPath}`);
+      warnings.push(`Fixed duplicate manifest segments: ${refPath} -> ${cleanedPath}`);
     }
 
-    // Check if path is parseable
     const parsed = this.parsePath(cleanedPath);
     const valid = parsed !== null;
 
-    return {
-      valid,
-      cleanedPath,
-      warnings,
-      parsed
-    };
+    return { valid, cleanedPath, warnings, parsed };
   }
 
   /**
@@ -510,7 +483,7 @@ export class MultiManifest {
           let absolutePath = null;
 
           // Check if it's a manifest-relative path
-          if (depPath.includes('/manifest/')) {
+          if (/\/manifest(?:\.local)?\//.test(depPath)) {
             absolutePath = await this.resolveManifestPath(depPath);
           } else {
             // Relative to current file

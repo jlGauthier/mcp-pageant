@@ -1,10 +1,9 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { PersonaCore } from './persona-core.js';
 import { MultiManifest } from './MultiManifest.js';
 import { FuzzyMatch } from './FuzzyMatch.js';
 import { formatMarkdown, formatWithContext } from './formatMarkdown.js';
-export class PersonaManager extends PersonaCore {
+export class PersonaManager {
   // Delegate to FuzzyMatch for consistency
   fuzzyMatch(options, search) {
     const result = FuzzyMatch.findBest(options, search);
@@ -12,18 +11,13 @@ export class PersonaManager extends PersonaCore {
   }
 
   constructor(baseDir, options = {}) {
-    super();
     this.baseDir = baseDir;
     this.testMode = options.testMode || false;
 
-    const manifestDirs = process.env.MANIFEST_DIRS ?
-      process.env.MANIFEST_DIRS.split(',').map(dir =>
-        path.resolve(baseDir, dir.trim())
-      ) :
-      [path.join(baseDir, 'manifest')];
-
-    this.multiManifest = new MultiManifest(manifestDirs);
-    this.manifestDirs = manifestDirs;
+    const mainDir = path.join(baseDir, 'manifest');
+    const localDir = path.join(baseDir, 'manifest.local');
+    this.multiManifest = new MultiManifest(mainDir, localDir);
+    this.manifestDirs = this.multiManifest.getManifestDirs();
 
     this.variables = {};
     this.variablesLoaded = this.loadVariables();
@@ -231,61 +225,39 @@ export class PersonaManager extends PersonaCore {
     }
   }
 
-  // Write AGENT_PROJECT as HTML comment to CLAUDE.local.md.
-  // Falls back to deriving from the project directory above .pageant.
-  async writeAgentProject(targetDir = null) {
+  // Strip any legacy AGENT_PROJECT comment from CLAUDE.local.md.
+  // The project name is derived from the path at read time (see deriveProjectFromPath),
+  // so we no longer write it into the file.
+  async stripAgentProjectComment(targetDir) {
     if (this.testMode) return;
-    if (!targetDir) throw new Error('writeAgentProject requires targetDir');
-
-    let project = this.variables['AGENT_PROJECT'];
-    if (!project || project === 'standalone') {
-      project = this.deriveProjectFromPath(targetDir);
-    }
-
     const claudeLocalPath = path.join(targetDir, 'CLAUDE.local.md');
     try {
       let content = await fs.readFile(claudeLocalPath, 'utf8');
-
-      if (!project || project === 'standalone') {
-        if (content.match(/<!--\s*AGENT_PROJECT:/)) {
-          content = content.replace(/<!--\s*AGENT_PROJECT:\s*.+?\s*-->\n?/, '');
-          await fs.writeFile(claudeLocalPath, content, 'utf8');
-        }
-        return;
-      }
-
-      const comment = `<!-- AGENT_PROJECT: ${project} -->`;
       if (content.match(/<!--\s*AGENT_PROJECT:/)) {
-        content = content.replace(/<!--\s*AGENT_PROJECT:\s*.+?\s*-->/, comment);
-      } else {
-        const jobMatch = content.match(/<!--\s*AGENT_JOB:\s*.+?\s*-->/);
-        const nameMatch = content.match(/<!--\s*AGENT_NAME:\s*.+?\s*-->/);
-        const anchor = jobMatch || nameMatch;
-        if (anchor) {
-          content = content.replace(anchor[0], `${anchor[0]}\n${comment}`);
-        } else {
-          content = `${comment}\n\n${content}`;
-        }
+        content = content.replace(/<!--\s*AGENT_PROJECT:\s*.+?\s*-->\n?/, '');
+        await fs.writeFile(claudeLocalPath, content, 'utf8');
       }
-
-      await fs.writeFile(claudeLocalPath, content, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') return;
-      console.error('Error writing AGENT_PROJECT:', error);
       throw error;
     }
   }
 
   // Derive the project name from an absolute agent path.
-  // For a path like C:\Foo\.pageant\backend → 'foo'.
-  // For a flat agent (no .pageant), use the parent directory name.
-  deriveProjectFromPath(agentDir) {
+  //   <project>/.pageant/<agent>   → lowercase <project>
+  //   <agent>                      → lowercase <agent>
+  // Pure function. Identity for any read-time consumer (channel display, etc).
+  static deriveProjectFromPath(agentDir) {
     const parts = agentDir.split(/[\\/]/).filter(Boolean);
     const pageantIdx = parts.lastIndexOf('.pageant');
     if (pageantIdx > 0) {
       return parts[pageantIdx - 1].toLowerCase();
     }
     return (parts[parts.length - 1] || 'standalone').toLowerCase();
+  }
+  // Instance alias so existing callers keep working.
+  deriveProjectFromPath(agentDir) {
+    return PersonaManager.deriveProjectFromPath(agentDir);
   }
 
   getTemplatePath(projectPath) {
@@ -690,7 +662,7 @@ export class PersonaManager extends PersonaCore {
 
       await this.writeAgentName(projectPath);
       await this.writeAgentJob(projectPath);
-      await this.writeAgentProject(projectPath);
+      await this.stripAgentProjectComment(projectPath);
 
       return true;
     } catch (error) {

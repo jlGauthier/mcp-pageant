@@ -10,6 +10,7 @@ pageant.template.md
 .env
 .env.local
 *.local
+manifest.local/
 .mcp.json
 .claude/
 

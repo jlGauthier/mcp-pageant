@@ -293,21 +293,12 @@ Each agent focuses on their domain without conflicting knowledge.
 
 ## Advanced Features
 
-### Multi-Manifest Overlays
+### Local Overlay
 
-Share components across projects:
-
-```bash
-# .env
-MANIFEST_DIRS=./manifest,../company_personas,~/user_personas
-```
-
-**Resolution order:** Later directories override earlier ones.
-
-Use cases:
-- Company-wide shared components
-- User-specific customizations
-- Project-specific overrides
+Drop a gitignored `manifest.local/` next to `manifest/` and pageant will resolve
+components from either. When the same path exists in both, the local copy wins.
+Use it to keep private personas out of version control without forking the
+component library.
 
 ### Temporary Modifications
 

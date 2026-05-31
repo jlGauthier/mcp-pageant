@@ -321,63 +321,24 @@ describe('MultiManifest', () => {
   });
 
   describe('Real-world Scenarios', () => {
-    it('should handle file in extension manifest only', async () => {
-      const pageantManifest = await createTempDir();
-      const extensionManifest = await createTempDir();
+    it('should resolve files from the local overlay when main is empty', async () => {
+      const main = await createTempDir();
+      const local = await createTempDir();
 
-      // File exists only in extension
-      await createTestStructure(extensionManifest, {
+      await createTestStructure(local, {
         'jobs/02_backend/database_expert.md': 'db expertise'
       });
 
-      // Start with only main manifest
-      multiManifest = new MultiManifest([pageantManifest]);
+      multiManifest = new MultiManifest(main, local);
 
-      let file = await multiManifest.findFile('jobs', '02_backend', 'database_expert');
-      expect(file).toBeNull(); // Bug reproduced
-
-      // Add extension manifest
-      multiManifest.addManifestDir(extensionManifest);
-
-      file = await multiManifest.findFile('jobs', '02_backend', 'database_expert');
-      expect(file).toBeTruthy(); // Bug fixed!
+      const file = await multiManifest.findFile('jobs', '02_backend', 'database_expert');
+      expect(file).toBeTruthy();
       expect(file.filename).toBe('database_expert');
     });
 
     it('should handle numeric section prefixes', () => {
-      // This is handled by FuzzyMatch.clean() which strips numeric prefixes
-      // So '001_main' and 'main' are treated the same
-      const cleaned = multiManifest.constructor.name; // Just to use multiManifest
+      const cleaned = multiManifest.constructor.name;
       expect(cleaned).toBe('MultiManifest');
-    });
-  });
-
-  describe('Runtime Directory Management', () => {
-    it('should add and remove directories dynamically', async () => {
-      const main = await createTempDir();
-      const ext1 = await createTempDir();
-      const ext2 = await createTempDir();
-
-      await createTestStructure(main, { 'main/file1.md': 'content1' });
-      await createTestStructure(ext1, { 'main/file2.md': 'content2' });
-      await createTestStructure(ext2, { 'main/file3.md': 'content3' });
-
-      multiManifest = new MultiManifest([main]);
-
-      let files = await multiManifest.findFiles('main');
-      expect(files).toHaveLength(1);
-
-      multiManifest.addManifestDir(ext1);
-      files = await multiManifest.findFiles('main');
-      expect(files).toHaveLength(2);
-
-      multiManifest.addManifestDir(ext2);
-      files = await multiManifest.findFiles('main');
-      expect(files).toHaveLength(3);
-
-      multiManifest.removeManifestDir(main);
-      files = await multiManifest.findFiles('main');
-      expect(files).toHaveLength(2); // Only ext1 and ext2 remain
     });
   });
 });

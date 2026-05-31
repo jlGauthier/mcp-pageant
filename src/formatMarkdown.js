@@ -179,18 +179,17 @@ function sectionChange(slotA, slotB) {
 
 function getSlotName(fullPath) {
   const pathParts = fullPath.split('/');
-  const manifestIdx = pathParts.indexOf('manifest');
+  const manifestIdx = pathParts.findIndex(p => p === 'manifest' || p === 'manifest.local');
 
   if (manifestIdx >= 0 && manifestIdx + 2 < pathParts.length) {
     const subsectionDir = pathParts[manifestIdx + 2];
-    // Only use this if there's another level after it (not the filename itself)
     if (/^\d+[_-]/.test(subsectionDir) && manifestIdx + 3 < pathParts.length) {
       return toTitleCase(subsectionDir.replace(/^\d+[_-]/, ''));
     }
   }
 
-  // Handle virtual paths
-  if (pathParts.length >= 2 && !fullPath.includes('manifest')) {
+  // Virtual paths (inline overrides) — neither manifest nor manifest.local in path
+  if (pathParts.length >= 2 && manifestIdx < 0) {
     const subsection = pathParts[pathParts.length - 2];
     return toTitleCase(subsection);
   }
@@ -215,9 +214,10 @@ async function getSectionName(fullPath, slotKey, multiManifest) {
     return 'Unknown';
   }
 
-  // Extract section name from path
+  // Extract section name from path. The manifest root may be 'manifest' or
+  // 'manifest.local' (the gitignored overlay).
   const pathParts = fullPath.split('/');
-  const manifestIdx = pathParts.indexOf('manifest');
+  const manifestIdx = pathParts.findIndex(p => p === 'manifest' || p === 'manifest.local');
 
   if (manifestIdx >= 0 && manifestIdx + 1 < pathParts.length) {
     const sectionDir = pathParts[manifestIdx + 1];
